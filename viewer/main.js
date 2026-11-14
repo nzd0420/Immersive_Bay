@@ -758,7 +758,7 @@ async function finishScan() {
   scan.pending = "sending";
   render();
   while (scan.sending) await sleep(50);
-  const options = { steps: Number($("steps").value) || 3000, timebase: scan.timebase,
+  const options = { steps: Number($("steps").value) || 7000, timebase: scan.timebase,
     record: $("auto").checked };
   try {
     await fetch(`/scan/finish?id=${scan.id}`,
@@ -798,7 +798,7 @@ async function resetAll() {
   $("room").checked = true;
   $("pace").checked = false;
   $("auto").checked = false;
-  $("steps").value = 3000;
+  $("steps").value = 7000;
   setBackdrop(false);
   placeStage();
   render();

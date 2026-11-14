@@ -265,9 +265,12 @@ class Scans:
     """Receives scans from the viewer and turns each into a training run."""
 
     def __init__(self, upstream_host: str, upstream_port: int, ssh_host: str, remote_dir: str,
-                 latency_ms: float = 30.0, steps: int = 3000):
+                 latency_ms: float = 15.0, steps: int = 7000):
         self.upstream = (upstream_host, upstream_port)
         self.ssh_host, self.remote_dir = ssh_host, remote_dir
+        # A photo is taken about this long before its timestamp, measured with
+        # scripts/calibrate_scan.py on a 139-photo walking scan: held-out PSNR was flat
+        # from 0 to 30 ms (18.9, 18.8 dB) and fell beyond (17.8 at 60, 16.9 at 120).
         self.latency_ms, self.steps = latency_ms, steps
         self.calibration = json.loads((Path(__file__).with_name("quest_cameras.json")).read_text())
         self.status = {"state": "idle"}
