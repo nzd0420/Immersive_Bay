@@ -1,5 +1,7 @@
 # Live Splat
 
+English | [简体中文](README.zh-CN.md)
+
 Watch a 3D Gaussian Splatting reconstruction form in front of you.
 
 A scene is trained on a GPU server while a Meta Quest shows the Gaussians sharpening, every
