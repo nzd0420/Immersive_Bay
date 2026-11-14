@@ -59,11 +59,21 @@ let sceneInfo = null; // from the server's status, or a recording's intro messag
 let roomWanted = true;
 let solidBackground = false;
 
-// In AR the real room shows wherever nothing opaque is drawn. Painting the background
-// black hides it, so that only the reconstruction is visible.
+// In AR the real room shows wherever nothing opaque is drawn, and three.js always clears
+// to transparent there, whatever clear colour is set. So hiding the room takes a real
+// object: a black sphere around the viewer, drawn before everything else.
+const backdrop = new THREE.Mesh(
+  new THREE.SphereGeometry(40, 24, 12),
+  new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, depthTest: false, depthWrite: false }),
+);
+backdrop.renderOrder = -1000;
+backdrop.frustumCulled = false;
+backdrop.visible = false;
+camera.add(backdrop);
+
 function setBackdrop(solid) {
   solidBackground = solid;
-  renderer.setClearColor(0x000000, renderer.xr.isPresenting && solidBackground ? 1 : 0);
+  backdrop.visible = renderer.xr.isPresenting && solidBackground;
 }
 
 // The capture world has y down and z forward; three.js has y up and z towards the viewer.
@@ -307,7 +317,7 @@ async function followStatus() {
 async function startTraining() {
   stopReplay();
   const body = { scene: $("scene").value, max_steps: Number($("steps").value) || 7000,
-    pace: $("pace").checked };
+    pace: $("pace").checked, record: $("auto").checked };
   await fetch("/api/start", { method: "POST", body: JSON.stringify(body) });
 }
 
@@ -726,7 +736,8 @@ async function finishScan() {
   scan.pending = "sending";
   render();
   while (scan.sending) await sleep(50);
-  const options = { steps: Number($("steps").value) || 3000, timebase: scan.timebase };
+  const options = { steps: Number($("steps").value) || 3000, timebase: scan.timebase,
+    record: $("auto").checked };
   try {
     await fetch(`/scan/finish?id=${scan.id}`,
       { method: "POST", body: JSON.stringify({ poses: scan.poses, options }) });

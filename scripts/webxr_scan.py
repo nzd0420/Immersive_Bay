@@ -327,7 +327,8 @@ class Scans:
             subprocess.run(["rsync", "-az", "--delete", f"{out}/", f"{self.ssh_host}:{remote}/"],
                            check=True, timeout=900)
             self._set(scan_id, "starting", frames=summary["frames"])
-            body = json.dumps({"scene": scan_id, "max_steps": int(options.get("steps", self.steps))})
+            body = json.dumps({"scene": scan_id, "max_steps": int(options.get("steps", self.steps)),
+                               "record": bool(options.get("record", False))})
             connection = http.client.HTTPConnection(*self.upstream, timeout=60)
             connection.request("POST", "/api/start", body=body)
             reply = json.loads(connection.getresponse().read())
