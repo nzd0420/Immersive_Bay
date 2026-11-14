@@ -51,35 +51,98 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// Two ways to place a scene:
+//   hologram   scaled to fit a table top, turned to face the viewer
+//   room       real size and where it was scanned, so the viewer stands inside it
+// Room scale needs a scan in metres with a known floor, which a Quest scan provides.
+let sceneInfo = null; // from the server's status, or a recording's intro message
+let roomWanted = true;
+let solidBackground = false;
+
+// The capture world has y down and z forward; three.js has y up and z towards the viewer.
+const CAPTURE_TO_THREE = new THREE.Matrix4().makeScale(1, -1, -1);
 // Direction, in stage space, from the scene towards where it was photographed from.
 const front = new THREE.Vector3(0, 0.3, 1).normalize();
-let fittedScene = "";
+
+const inRoom = () => roomWanted && !!sceneInfo?.to_world;
 
 function fitScene(info) {
   if (!info || !info.radius) return;
-  const up = new THREE.Vector3(...(info.up || [0, 0, 1])).normalize();
-  fit.quaternion.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
-  fit.scale.setScalar(HOLOGRAM_RADIUS / info.radius);
-  content.position.set(...info.center).multiplyScalar(-1);
-  if (info.view) {
-    front.set(...info.view).sub(new THREE.Vector3(...info.center))
-      .applyQuaternion(fit.quaternion).normalize();
-  }
-  if (info.name !== fittedScene) {
-    fittedScene = info.name;
-    faceViewer();
-  }
+  const changed = info.name !== sceneInfo?.name || !!info.to_world !== !!sceneInfo?.to_world;
+  sceneInfo = info;
+  layout(changed);
 }
 
-// Look at the scene from the side it was captured from.
-function faceViewer() {
-  if (renderer.xr.isPresenting) {
-    // Turn the hologram so that side faces the viewer, who stands towards +z.
+function layout(replace = false) {
+  const info = sceneInfo;
+  if (!info) return;
+  if (inRoom()) {
+    const toWorld = new THREE.Matrix4().set(...info.to_world.flat());
+    toWorld.premultiply(CAPTURE_TO_THREE).decompose(fit.position, fit.quaternion, fit.scale);
+    fit.position.y += info.floor; // put the scanned floor at y = 0
+    content.position.set(0, 0, 0);
+    spin.rotation.set(0, 0, 0);
+  } else {
+    const up = new THREE.Vector3(...(info.up || [0, 0, 1])).normalize();
+    fit.position.set(0, 0, 0);
+    fit.quaternion.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
+    fit.scale.setScalar(HOLOGRAM_RADIUS / info.radius);
+    content.position.set(...info.center).multiplyScalar(-1);
+    if (info.view) {
+      front.set(...info.view).sub(new THREE.Vector3(...info.center))
+        .applyQuaternion(fit.quaternion).normalize();
+    }
+  }
+  if (replace) placeStage();
+}
+
+// Where the whole scene sits, and where a desktop camera looks from.
+function placeStage() {
+  const presenting = renderer.xr.isPresenting;
+  scene.attach(stage);
+  stage.scale.setScalar(1);
+  stage.quaternion.identity();
+  stage.position.set(0, 0, 0);
+  if (inRoom()) {
+    const saved = presenting ? loadAlignment() : null;
+    if (saved) {
+      stage.position.set(saved.x, saved.y, saved.z);
+      stage.rotation.set(0, saved.yaw, 0);
+    }
+    if (!presenting) {
+      // Stand where the scan was taken from and look at the middle of the scene.
+      scene.updateMatrixWorld(true);
+      camera.position.copy(content.localToWorld(new THREE.Vector3(...sceneInfo.view)));
+      controls.target.copy(content.localToWorld(new THREE.Vector3(...sceneInfo.center)));
+    }
+  } else if (presenting) {
+    stage.position.copy(XR_ANCHOR);
+    // Turn the hologram so its photographed side faces the viewer, who stands towards +z.
     spin.rotation.set(0, -Math.atan2(front.x, front.z), 0);
   } else {
     spin.rotation.set(0, 0, 0);
     camera.position.copy(front).multiplyScalar(1.5);
     controls.target.set(0, 0, 0);
+  }
+  placeBoard();
+  renderer.setClearColor(0x05060a, presenting && solidBackground ? 1 : 0);
+}
+
+// The viewer lines the room up with reality by hand; remember it for this scene.
+function loadAlignment() {
+  try {
+    return JSON.parse(localStorage.getItem(`align:${sceneInfo.name}`));
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveAlignment() {
+  try {
+    const { x, y, z } = stage.position;
+    localStorage.setItem(`align:${sceneInfo.name}`, JSON.stringify({ x, y, z, yaw: stage.rotation.y }));
+  } catch (error) {
+    // storage unavailable: the alignment just lasts for this session
   }
 }
 
@@ -385,10 +448,23 @@ const board = new THREE.Mesh(
   new THREE.PlaneGeometry(0.64, 0.24),
   new THREE.MeshBasicMaterial({ map: boardTexture, transparent: true }),
 );
-board.position.set(0, -0.42, 0.25);
-board.rotation.x = -0.5;
 board.visible = false;
-stage.add(board);
+
+// Beside the hologram, or on the left controller like a wristwatch when at room scale.
+function placeBoard() {
+  if (inRoom() && renderer.xr.isPresenting) {
+    const hand = hands.find((item) => item.handedness === "left") || hands[0];
+    hand.grip.add(board);
+    board.position.set(0, 0.09, 0.03);
+    board.rotation.set(-1.1, 0, 0);
+    board.scale.setScalar(0.34);
+  } else {
+    stage.add(board);
+    board.position.set(0, -0.42, 0.25);
+    board.rotation.set(-0.5, 0, 0);
+    board.scale.setScalar(1);
+  }
+}
 
 function drawBoard(r) {
   const g = boardCanvas.getContext("2d");
@@ -420,7 +496,8 @@ function drawBoard(r) {
   g.fillStyle = "#8d95a5";
   g.font = "28px system-ui, sans-serif";
   const hint = r.copying ? `replay arriving: ${r.copying}`
-    : "trigger: restart   ·   grip: move   ·   both grips: resize";
+    : inRoom() ? "grip: slide   ·   both grips: turn   ·   A/X: table top   ·   B/Y: hide room"
+    : "trigger: restart   ·   grip: move   ·   both grips: resize   ·   A/X: room";
   g.fillText(hint, 44, 348);
   boardTexture.needsUpdate = true;
 }
@@ -435,40 +512,56 @@ const xr = new SparkXr({
   frameBufferScaleFactor: 0.7,
   onEnterXr: () => {
     $("xr").textContent = "Exit AR";
-    stage.position.copy(XR_ANCHOR);
-    stage.scale.setScalar(1);
     board.visible = true;
     controls.enabled = false;
-    setTimeout(faceViewer, 300); // once the session is presenting
+    setTimeout(placeStage, 300); // once the session is presenting
   },
   onExitXr: () => {
     $("xr").textContent = "Enter AR";
-    stage.position.set(0, 0, 0);
-    stage.quaternion.identity();
-    stage.scale.setScalar(1);
     board.visible = false;
     controls.enabled = true;
-    faceViewer();
+    setTimeout(placeStage, 300);
   },
 });
 window.liveSplat = { xr, spark, packed, mesh, content, state, THREE, PackedSplats, SplatMesh };
 
-// Grip moves the hologram; both grips resize it; trigger restarts training.
+// Hologram: grip moves it, both grips resize it. Room: grip slides the whole scene, both
+// grips also turn it about the vertical, to line it up with the real room.
+// Trigger restarts training. A/X switches hologram and room; B/Y hides the real room;
+// pressing a thumbstick forgets the alignment.
 const hands = [0, 1].map((index) => {
   const grip = renderer.xr.getControllerGrip(index);
   localFrame.add(grip);
-  const hand = { grip, squeezing: false };
+  const hand = { grip, squeezing: false, handedness: "", pressed: [] };
+  grip.addEventListener("connected", (event) => { hand.handedness = event.data.handedness; });
   grip.addEventListener("squeezestart", () => { hand.squeezing = true; regrab(); });
   grip.addEventListener("squeezeend", () => { hand.squeezing = false; regrab(); });
   renderer.xr.getController(index).addEventListener("select", startTraining);
   return hand;
 });
 let pinch = null;
+let drag = null;
+
+// Midpoint of the gripping hands, and the heading of the line between two of them.
+function grasp(held) {
+  const a = held[0].grip.getWorldPosition(new THREE.Vector3());
+  if (held.length < 2) return { middle: a, heading: 0 };
+  const b = held[1].grip.getWorldPosition(new THREE.Vector3());
+  return { middle: a.clone().add(b).multiplyScalar(0.5), heading: Math.atan2(b.x - a.x, b.z - a.z) };
+}
 
 function regrab() {
   const held = hands.filter((hand) => hand.squeezing);
   scene.attach(stage);
   pinch = null;
+  if (inRoom()) {
+    if (drag && !held.length) saveAlignment();
+    drag = held.length
+      ? { held, ...grasp(held), position: stage.position.clone(), yaw: stage.rotation.y }
+      : null;
+    return;
+  }
+  drag = null;
   if (held.length === 1) {
     held[0].grip.attach(stage);
   } else if (held.length === 2) {
@@ -483,10 +576,52 @@ function handDistance() {
   return Math.max(a.distanceTo(b), 0.01);
 }
 
+function setRoom(wanted) {
+  roomWanted = wanted;
+  $("room").checked = wanted;
+  drag = pinch = null;
+  layout(true);
+  render();
+}
+$("room").addEventListener("change", () => setRoom($("room").checked));
+
+const BUTTONS = {
+  4: () => setRoom(!roomWanted), // A / X
+  5: () => { solidBackground = !solidBackground; placeStage(); }, // B / Y
+  3: () => { // thumbstick press
+    try { localStorage.removeItem(`align:${sceneInfo?.name}`); } catch (error) { /* ignore */ }
+    placeStage();
+  },
+};
+
+function pollButtons() {
+  const sources = renderer.xr.getSession()?.inputSources || [];
+  let index = 0;
+  for (const source of sources) {
+    const hand = hands[index++];
+    if (!hand || !source.gamepad) continue;
+    for (const [button, action] of Object.entries(BUTTONS)) {
+      const down = !!source.gamepad.buttons[button]?.pressed;
+      if (down && !hand.pressed[button]) action();
+      hand.pressed[button] = down;
+    }
+  }
+}
+
+const VERTICAL = new THREE.Vector3(0, 1, 0);
+
 renderer.setAnimationLoop(() => {
+  if (renderer.xr.isPresenting) pollButtons();
   if (pinch) {
     const scale = THREE.MathUtils.clamp(pinch.scale * handDistance() / pinch.distance, 0.2, 8);
     stage.scale.setScalar(scale);
+  }
+  if (drag) {
+    const now = grasp(drag.held);
+    const turn = drag.held.length === 2 ? now.heading - drag.heading : 0;
+    stage.rotation.set(0, drag.yaw + turn, 0);
+    stage.position.copy(drag.position).sub(drag.middle).applyAxisAngle(VERTICAL, turn)
+      .add(now.middle);
   }
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);

@@ -58,6 +58,11 @@ class Scene:
     radius: float = 1.0
     up: list = field(default_factory=lambda: [0.0, 0.0, 1.0])
     view: list = field(default_factory=lambda: [0.0, -1.0, 0.5])  # mean camera position
+    # Quest scans only: how to put the scene back where it was captured, at real size.
+    # `to_world` (4x4, row-major) maps this scene to the capture's world in metres
+    # (x right, y down, z forward); `floor` is the floor's y in that world.
+    to_world: list | None = None
+    floor: float = 0.0
 
 
 def _load_images(paths, max_size):
@@ -102,6 +107,15 @@ def _scene_up(data_dir: str, parser) -> list:
     return up.tolist()
 
 
+def _real_world(data_dir: str, parser):
+    """For a Quest scan: the transform back to the metric capture world, and its floor."""
+    if not (Path(data_dir) / "quest_capture.json").exists():
+        return None, 0.0
+    to_world = np.linalg.inv(parser.transform)
+    heights = parser.points @ to_world[1, :3] + to_world[1, 3]  # y in the capture world
+    return to_world.tolist(), float(np.percentile(heights, 98))  # y points down
+
+
 def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int) -> Scene:
     """Load an undistorted COLMAP workspace (images/ + sparse/) with gsplat's parser."""
     if examples_dir not in sys.path:
@@ -120,6 +134,7 @@ def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int
         Ks.append(K)
     indices = list(range(len(images)))
     center, radius = _bounds(parser.points)
+    to_world, floor = _real_world(data_dir, parser)
     return Scene(
         name=name,
         images=images,
@@ -134,6 +149,8 @@ def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int
         radius=radius,
         up=_scene_up(data_dir, parser),
         view=parser.camtoworlds[:, :3, 3].mean(axis=0).tolist(),
+        to_world=to_world,
+        floor=floor,
     )
 
 
@@ -422,7 +439,7 @@ class Session:
         self.scene_info = {
             "name": scene.name, "images": len(scene.images),
             "center": scene.center, "radius": scene.radius, "up": scene.up,
-            "view": scene.view,
+            "view": scene.view, "to_world": scene.to_world, "floor": scene.floor,
         }
         splats, optimizers = create_splats(scene, cfg)
         mcmc = cfg.strategy == "mcmc"
