@@ -1,0 +1,17 @@
+{
+  "note": "Passthrough camera calibration of the Quest 3S used at the hackathon, read with `adb shell dumpsys media.camera` (camera ids 50 and 51: android.lens.intrinsicCalibration, poseTranslation, poseRotation). Intrinsics are for the full 1728x1728 image. Each headset has its own values.",
+  "left": {
+    "browser_label": "camera 1",
+    "width": 1728, "height": 1728,
+    "fx": 1158.56787109, "fy": 1158.56787109, "cx": 864.21093750, "cy": 864.27349854,
+    "translation": [-0.03232764, -0.01257560, -0.07371438],
+    "rotation": [-0.99868351, -0.00230042, -0.00340355, 0.05113037]
+  },
+  "right": {
+    "browser_label": "camera 2",
+    "width": 1728, "height": 1728,
+    "fx": 1155.83239746, "fy": 1155.83239746, "cx": 866.19866943, "cy": 863.67651367,
+    "translation": [0.03172671, -0.01288473, -0.07469650],
+    "rotation": [-0.99840164, 0.00247186, 0.00272132, 0.05639769]
+  }
+}

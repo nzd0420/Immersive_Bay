@@ -20,9 +20,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from webxr_scan import Scans
 
 ROOT = (Path(__file__).resolve().parent.parent / "viewer").resolve()
 RECORDINGS = (Path(__file__).resolve().parent.parent / "recordings").resolve()
+DEBUG = (Path(__file__).resolve().parent.parent / "captures" / "_debug").resolve()
 
 
 class Fetcher(threading.Thread):
@@ -103,7 +107,7 @@ class Fetcher(threading.Thread):
         return waiting + items
 
 
-def make_handler(upstream_host, upstream_port, fetcher):
+def make_handler(upstream_host, upstream_port, fetcher, scans):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -174,6 +178,8 @@ def make_handler(upstream_host, upstream_port, fetcher):
                 self.close_connection = True
 
         def do_GET(self):
+            if self.path.startswith("/scan/status"):
+                return self._reply(200, json.dumps(scans.status).encode(), "application/json")
             if self.path.startswith("/api/recordings"):
                 return self._reply(200, json.dumps(fetcher.listing()).encode(),
                                    "application/json")
@@ -194,7 +200,45 @@ def make_handler(upstream_host, upstream_port, fetcher):
                 content_type = "text/javascript"
             self._reply(200, target.read_bytes(), content_type)
 
+        def _debug(self):
+            """Development aid: a page on the headset reports text and images here."""
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            DEBUG.mkdir(parents=True, exist_ok=True)
+            if self.path.startswith("/debug/frame"):
+                name = "".join(c for c in self.path.split("name=", 1)[-1] if c.isalnum() or c == "_")
+                (DEBUG / f"{name or 'frame'}.jpg").write_bytes(body)
+            else:
+                with open(DEBUG / "log.jsonl", "ab") as file:
+                    file.write(body.strip() + b"\n")
+            self._reply(200, b"ok")
+
+        def _scan(self):
+            """A scan made in the viewer: frames arrive one by one, then the pose history."""
+            url = urlparse(self.path)
+            query = {key: value[0] for key, value in parse_qs(url.query).items()}
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            try:
+                if url.path == "/scan/frame":
+                    scans.add_frame(query["id"], query["side"], int(query["n"]), float(query["t"]),
+                                    int(query["w"]), int(query["h"]), body)
+                elif url.path == "/scan/depth":
+                    scans.add_depth(query["id"], float(query["t"]), body)
+                elif url.path == "/scan/finish":
+                    payload = json.loads(body)
+                    scans.finish(query["id"], payload["poses"], payload.get("options", {}))
+                else:
+                    return self._reply(404, b"not found")
+            except (KeyError, ValueError) as error:
+                return self._reply(400, str(error).encode())
+            self._reply(200, b"ok")
+
         def do_POST(self):
+            if self.path.startswith("/scan/"):
+                return self._scan()
+            if self.path.startswith("/debug/"):
+                return self._debug()
             if self.path.startswith("/api/"):
                 return self._proxy("POST")
             self._reply(404, b"not found")
@@ -207,12 +251,16 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8090)))
     parser.add_argument("--upstream", default="127.0.0.1:8765")
+    parser.add_argument("--ssh-host", default="autodl_3080TI",
+                        help="GPU machine, for uploading scans made in the viewer")
+    parser.add_argument("--remote-dir", default="/root/autodl-tmp/immersive_bay")
     args = parser.parse_args()
     upstream_host, upstream_port = args.upstream.rsplit(":", 1)
     fetcher = Fetcher(upstream_host, int(upstream_port))
     fetcher.start()
+    scans = Scans(upstream_host, int(upstream_port), args.ssh_host, args.remote_dir)
     server = ThreadingHTTPServer((args.host, args.port),
-                                 make_handler(upstream_host, int(upstream_port), fetcher))
+                                 make_handler(upstream_host, int(upstream_port), fetcher, scans))
     server.daemon_threads = True
     print(f"Viewer on http://{args.host}:{args.port}  (api -> {args.upstream})", flush=True)
     server.serve_forever()

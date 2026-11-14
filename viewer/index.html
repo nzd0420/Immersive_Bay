@@ -22,6 +22,10 @@
     button.primary { flex: 1; background: var(--accent); color: #06231a; border-color: transparent; font-weight: 650; }
     .check { display: flex; gap: 8px; align-items: flex-start; color: var(--dim); font-size: 12px; }
     .check input { width: auto; margin: 2px 0 0; }
+    #scanRow { margin-top: 10px; }
+    #scanRow button { flex: 1; }
+    button:disabled { opacity: .45; cursor: default; }
+    #scanNote { color: var(--dim); font-size: 12px; min-height: 1em; }
     #replayRow { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
     #copying { color: var(--accent); font-size: 12px; margin-top: 6px; min-height: 1em; }
     #bar { height: 6px; background: #1b1f29; border-radius: 3px; overflow: hidden; margin: 12px 0 10px; }
@@ -47,7 +51,7 @@
     <div id="state">connecting…</div>
     <div class="row">
       <select id="scene" aria-label="Scene"></select>
-      <input id="steps" type="number" min="500" step="500" value="7000" aria-label="Training steps">
+      <input id="steps" type="number" min="500" step="500" value="3000" aria-label="Training steps">
     </div>
     <div class="row">
       <button id="start" class="primary">Start training</button>
@@ -55,6 +59,11 @@
     </div>
     <label class="check"><input id="pace" type="checkbox"> Show every 20th step (training waits for the display)</label>
     <label class="check"><input id="room" type="checkbox" checked> Room scale: real size, where it was scanned (Quest scans only)</label>
+    <div class="row" id="scanRow">
+      <button id="cameras">Enable scanning</button>
+      <button id="scan" disabled>Scan</button>
+    </div>
+    <div id="scanNote"></div>
     <div id="bar"><div id="fill"></div></div>
     <dl>
       <dt>Step</dt><dd id="step">–</dd>

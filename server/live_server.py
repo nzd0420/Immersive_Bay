@@ -63,6 +63,7 @@ class Scene:
     # (x right, y down, z forward); `floor` is the floor's y in that world.
     to_world: list | None = None
     floor: float = 0.0
+    anchored: bool = False  # scanned in the viewer's own AR session: already in place
 
 
 def _load_images(paths, max_size):
@@ -108,12 +109,16 @@ def _scene_up(data_dir: str, parser) -> list:
 
 
 def _real_world(data_dir: str, parser):
-    """For a Quest scan: the transform back to the metric capture world, and its floor."""
-    if not (Path(data_dir) / "quest_capture.json").exists():
-        return None, 0.0
+    """For a Quest scan: the transform back to the metric capture world, its floor, and
+    whether it was scanned in the viewer's own AR session (then nothing needs lining up)."""
+    marker = Path(data_dir) / "quest_capture.json"
+    if not marker.exists():
+        return None, 0.0, False
     to_world = np.linalg.inv(parser.transform)
+    if json.loads(marker.read_text()).get("anchored"):
+        return to_world.tolist(), 0.0, True
     heights = parser.points @ to_world[1, :3] + to_world[1, 3]  # y in the capture world
-    return to_world.tolist(), float(np.percentile(heights, 98))  # y points down
+    return to_world.tolist(), float(np.percentile(heights, 98)), False  # y points down
 
 
 def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int) -> Scene:
@@ -134,7 +139,7 @@ def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int
         Ks.append(K)
     indices = list(range(len(images)))
     center, radius = _bounds(parser.points)
-    to_world, floor = _real_world(data_dir, parser)
+    to_world, floor, anchored = _real_world(data_dir, parser)
     return Scene(
         name=name,
         images=images,
@@ -151,6 +156,7 @@ def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int
         view=parser.camtoworlds[:, :3, 3].mean(axis=0).tolist(),
         to_world=to_world,
         floor=floor,
+        anchored=anchored,
     )
 
 
@@ -440,6 +446,7 @@ class Session:
             "name": scene.name, "images": len(scene.images),
             "center": scene.center, "radius": scene.radius, "up": scene.up,
             "view": scene.view, "to_world": scene.to_world, "floor": scene.floor,
+            "anchored": scene.anchored,
         }
         splats, optimizers = create_splats(scene, cfg)
         mcmc = cfg.strategy == "mcmc"
@@ -554,9 +561,11 @@ class Session:
 
 
 class App:
-    def __init__(self, scenes: dict, examples_dir: str, static_dir: str, runs_dir: str):
+    def __init__(self, scenes: dict, examples_dir: str, static_dir: str, runs_dir: str,
+                 scenes_dir: str = ""):
         self.runs_dir = Path(runs_dir).resolve()
-        self.scenes = scenes
+        self.fixed_scenes = scenes
+        self.scenes_dir = Path(scenes_dir).resolve() if scenes_dir else None
         self.examples_dir = examples_dir
         self.static_dir = Path(static_dir).resolve() if static_dir else None
         self.session: Session | None = None
@@ -567,6 +576,17 @@ class App:
         self.viewers = 0  # open streams
         self.ack_cond = threading.Condition()
         self.scene_cache: dict = {}
+
+    @property
+    def scenes(self) -> dict:
+        """Scenes named on the command line, plus every workspace in the scenes directory
+        (looked up each time, so a scan uploaded while the server runs can be trained)."""
+        found = dict(self.fixed_scenes)
+        if self.scenes_dir and self.scenes_dir.is_dir():
+            for path in sorted(self.scenes_dir.iterdir()):
+                if (path / "images").is_dir() and (path / "sparse").is_dir():
+                    found.setdefault(path.name, str(path))
+        return found
 
     def _load(self, cfg: TrainConfig) -> Scene:
         key = (cfg.scene, cfg.max_size)
@@ -591,10 +611,11 @@ class App:
                 self.session.thread.join(timeout=30)
             known = {k: v for k, v in options.items() if k in TrainConfig.__dataclass_fields__}
             cfg = TrainConfig(**known)
+            scenes = self.scenes
             if not cfg.scene:
-                cfg.scene = next(iter(self.scenes))
-            if cfg.scene not in self.scenes:
-                raise KeyError(f"Unknown scene {cfg.scene!r}; have {list(self.scenes)}")
+                cfg.scene = next(iter(scenes))
+            if cfg.scene not in scenes:
+                raise KeyError(f"Unknown scene {cfg.scene!r}; have {list(scenes)}")
             self.runs += 1
             self.session = Session(cfg, self._load, self.runs, lambda: self.viewers,
                                    self.runs_dir)
@@ -814,14 +835,16 @@ def main():
                         help="path to gsplat's examples/ directory (for its COLMAP parser)")
     parser.add_argument("--static", default="", help="directory of viewer files to serve")
     parser.add_argument("--runs", default="runs", help="directory for replay files")
+    parser.add_argument("--scenes-dir", default="",
+                        help="directory of COLMAP workspaces, re-read on every request")
     args = parser.parse_args()
     scenes = dict(item.split("=", 1) for item in args.scene)
-    if not scenes:
-        parser.error("give at least one --scene NAME=DIR")
-    app = App(scenes, args.gsplat_examples, args.static, args.runs)
+    if not scenes and not args.scenes_dir:
+        parser.error("give at least one --scene NAME=DIR, or --scenes-dir")
+    app = App(scenes, args.gsplat_examples, args.static, args.runs, args.scenes_dir)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     server.daemon_threads = True
-    print(f"Serving on http://{args.host}:{args.port}  scenes: {list(scenes)}", flush=True)
+    print(f"Serving on http://{args.host}:{args.port}  scenes: {list(app.scenes)}", flush=True)
     server.serve_forever()
 
 

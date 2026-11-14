@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera test</title>
+  <style>
+    body { margin: 0; padding: 24px; background: #07080b; color: #eef1f6;
+      font: 18px/1.5 ui-sans-serif, system-ui, sans-serif; }
+    button { font: inherit; font-weight: 650; padding: 18px 28px; margin: 0 12px 12px 0;
+      background: #7cf3c6; color: #06231a; border: 0; border-radius: 12px; }
+    pre { font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; color: #c8cedb; }
+    video { width: 320px; border-radius: 8px; background: #111; }
+  </style>
+</head>
+<body>
+  <h2>Can this browser give a web page the passthrough camera during an XR session?</h2>
+  <p>Press the buttons in order. Allow the camera when asked. Step 2 enters AR for about
+    six seconds and comes back by itself: look around slowly while it runs.</p>
+  <button id="one">1. Open the cameras</button>
+  <button id="two" disabled>2. Test inside AR (6 s)</button>
+  <div id="videos"></div>
+  <pre id="out"></pre>
+<script type="module">
+const out = document.getElementById("out");
+const report = { agent: navigator.userAgent, steps: [] };
+const say = (line) => { out.textContent += line + "\n"; };
+const note = (key, value) => {
+  report[key] = value;
+  say(`${key}: ${JSON.stringify(value)}`);
+  fetch("/debug/log", { method: "POST", body: JSON.stringify({ [key]: value }) }).catch(() => {});
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const streams = [];
+
+async function upload(name, source, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(source, 0, 0, width, height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+  await fetch(`/debug/frame?name=${name}`, { method: "POST", body: blob });
+  return blob.size;
+}
+
+document.getElementById("one").onclick = async () => {
+  try {
+    note("secure", { isSecureContext, xr: !!navigator.xr, media: !!navigator.mediaDevices });
+    note("ar_supported", await navigator.xr?.isSessionSupported("immersive-ar"));
+    // A first request makes the labels readable.
+    const first = await navigator.mediaDevices.getUserMedia({ video: true });
+    first.getTracks().forEach((track) => track.stop());
+    const devices = (await navigator.mediaDevices.enumerateDevices())
+      .filter((device) => device.kind === "videoinput");
+    note("devices", devices.map((device) => ({ label: device.label, id: device.deviceId.slice(0, 8) })));
+    let index = 0;
+    for (const device of devices) {
+      const tag = `cam${index++}`;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: device.deviceId }, width: { ideal: 1728 }, height: { ideal: 1728 } },
+        });
+        const track = stream.getVideoTracks()[0];
+        const video = document.createElement("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.srcObject = stream;
+        await video.play();
+        document.getElementById("videos").append(video);
+        await sleep(800);
+        const capabilities = track.getCapabilities?.() || {};
+        note(tag, {
+          label: device.label, settings: track.getSettings(),
+          max: { width: capabilities.width?.max, height: capabilities.height?.max,
+                 frameRate: capabilities.frameRate?.max },
+          video: [video.videoWidth, video.videoHeight],
+        });
+        note(`${tag}_jpeg_bytes`, await upload(`${tag}_page`, video, video.videoWidth, video.videoHeight));
+        streams.push({ tag, video, track });
+      } catch (error) {
+        note(tag, { label: device.label, error: String(error) });
+      }
+    }
+    document.getElementById("two").disabled = !streams.length;
+  } catch (error) {
+    note("step1_error", String(error));
+  }
+};
+
+document.getElementById("two").onclick = async () => {
+  try {
+    const session = await navigator.xr.requestSession("immersive-ar", {
+      requiredFeatures: ["local-floor"],
+      optionalFeatures: ["depth-sensing"],
+      depthSensing: { usagePreference: ["cpu-optimized", "gpu-optimized"],
+                      dataFormatPreference: ["luminance-alpha", "float32", "unsigned-short"] },
+    });
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl2", { xrCompatible: true, alpha: true });
+    await gl.makeXRCompatible();
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+    const space = await session.requestReferenceSpace("local-floor");
+    note("xr_started", { features: session.enabledFeatures, blend: session.environmentBlendMode,
+      depthUsage: session.depthUsage, depthFormat: session.depthDataFormat });
+
+    // Count video frames two ways while the session runs.
+    const counts = {};
+    for (const { tag, video } of streams) {
+      counts[tag] = { callbacks: 0, first: null, last: null, timeChanges: 0, lastTime: -1 };
+      const onFrame = (now, metadata) => {
+        const entry = counts[tag];
+        entry.callbacks += 1;
+        const sample = { now: +now.toFixed(1), captureTime: metadata.captureTime,
+          presentationTime: +metadata.presentationTime.toFixed(1),
+          expectedDisplayTime: +metadata.expectedDisplayTime.toFixed(1),
+          mediaTime: metadata.mediaTime, size: [metadata.width, metadata.height] };
+        entry.first ||= sample;
+        entry.last = sample;
+        video.requestVideoFrameCallback(onFrame);
+      };
+      video.requestVideoFrameCallback?.(onFrame);
+    }
+
+    const started = performance.now();
+    const poses = [];
+    let xrFrames = 0, grabbed = 0, depth = null, busy = false;
+    await new Promise((resolve) => {
+      const onXrFrame = (time, frame) => {
+        xrFrames += 1;
+        const layer = session.renderState.baseLayer;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const pose = frame.getViewerPose(space);
+        for (const { tag, video } of streams) {
+          const entry = counts[tag];
+          if (video.currentTime !== entry.lastTime) {
+            entry.timeChanges += 1;
+            entry.lastTime = video.currentTime;
+          }
+        }
+        if (pose && !depth) {
+          try {
+            const info = frame.getDepthInformation?.(pose.views[0]);
+            if (info) depth = { cpu: true, size: [info.width, info.height], raw: info.rawValueToMeters };
+          } catch (error) {
+            depth = { cpu: false, error: String(error) };
+          }
+        }
+        // Grab one camera frame with its pose every second.
+        const elapsed = performance.now() - started;
+        if (pose && !busy && elapsed > 1000 * (grabbed + 1) && grabbed < 4) {
+          busy = true;
+          const shot = grabbed++;
+          const matrix = Array.from(pose.transform.matrix).map((value) => +value.toFixed(4));
+          poses.push({ shot, time: +time.toFixed(1), now: +performance.now().toFixed(1), matrix });
+          const { tag, video } = streams[0];
+          upload(`${tag}_xr${shot}`, video, video.videoWidth, video.videoHeight)
+            .catch(() => {}).finally(() => { busy = false; });
+        }
+        if (elapsed > 6000) {
+          resolve();
+          session.end();
+          return;
+        }
+        session.requestAnimationFrame(onXrFrame);
+      };
+      session.requestAnimationFrame(onXrFrame);
+    });
+    await sleep(500);
+    note("xr_frames", xrFrames);
+    note("video_in_xr", counts);
+    note("poses", poses);
+    note("depth", depth);
+    note("done", true);
+  } catch (error) {
+    note("step2_error", String(error));
+  }
+};
+</script>
+</body>
+</html>
