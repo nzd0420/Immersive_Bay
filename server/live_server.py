@@ -84,6 +84,24 @@ def _bounds(points: np.ndarray):
     return center.tolist(), max(radius, 1e-3)
 
 
+def _scene_up(data_dir: str, parser) -> list:
+    """Which way is up, in the parser's normalised world.
+
+    The parser re-orients a scene by the principal axes of its point cloud, so up is not
+    a fixed axis. A Quest scan (marked by quest_capture.json) has gravity along its
+    original +y axis, which is exact. Otherwise take the world axis closest to the
+    average "up" of the cameras: people hold cameras roughly upright.
+    """
+    if (Path(data_dir) / "quest_capture.json").exists():
+        up = parser.transform[:3, :3] @ np.array([0.0, -1.0, 0.0])
+        return (up / np.linalg.norm(up)).tolist()
+    camera_up = -parser.camtoworlds[:, :3, 1].mean(axis=0)  # OpenCV cameras: y is down
+    up = np.zeros(3)
+    axis = int(np.argmax(np.abs(camera_up)))
+    up[axis] = 1.0 if camera_up[axis] >= 0 else -1.0
+    return up.tolist()
+
+
 def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int) -> Scene:
     """Load an undistorted COLMAP workspace (images/ + sparse/) with gsplat's parser."""
     if examples_dir not in sys.path:
@@ -114,7 +132,7 @@ def load_colmap_scene(name: str, data_dir: str, examples_dir: str, max_size: int
         val_idx=[i for i in indices if i % 8 == 0],
         center=center,
         radius=radius,
-        up=[0.0, 0.0, 1.0],
+        up=_scene_up(data_dir, parser),
         view=parser.camtoworlds[:, :3, 3].mean(axis=0).tolist(),
     )
 
