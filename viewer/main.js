@@ -59,6 +59,13 @@ let sceneInfo = null; // from the server's status, or a recording's intro messag
 let roomWanted = true;
 let solidBackground = false;
 
+// In AR the real room shows wherever nothing opaque is drawn. Painting the background
+// black hides it, so that only the reconstruction is visible.
+function setBackdrop(solid) {
+  solidBackground = solid;
+  renderer.setClearColor(0x000000, renderer.xr.isPresenting && solidBackground ? 1 : 0);
+}
+
 // The capture world has y down and z forward; three.js has y up and z towards the viewer.
 const CAPTURE_TO_THREE = new THREE.Matrix4().makeScale(1, -1, -1);
 // Direction, in stage space, from the scene towards where it was photographed from.
@@ -127,7 +134,7 @@ function placeStage() {
     controls.target.set(0, 0, 0);
   }
   placeBoard();
-  renderer.setClearColor(0x05060a, presenting && solidBackground ? 1 : 0);
+  setBackdrop(solidBackground);
 }
 
 // The viewer lines the room up with reality by hand; remember it for this scene.
@@ -183,6 +190,9 @@ async function showFrame(payload, meta) {
     for (let i = 0, at = column; i < count; i++, at += 16) rows[at] += plane[i];
   }
   shownCount = count;
+  // The first frame of a room-scale reconstruction: black out the real room, so what
+  // is seen is only what was rebuilt. (B/Y brings the room back.)
+  if (!mesh.visible && inRoom()) setBackdrop(true);
   mesh.visible = true;
   markers.visible = false;
   depthCloud.visible = false;
@@ -676,6 +686,7 @@ function startScan() {
   depthGeometry.setDrawRange(0, 0);
   depthCloud.visible = true;
   mesh.visible = false;
+  setBackdrop(false); // the real room has to be visible to scan it
   roomWanted = true;
   $("room").checked = true;
   scan.active = true;
@@ -905,7 +916,7 @@ function drawBoard(r) {
   g.font = "28px system-ui, sans-serif";
   const hint = scan.note ? scan.note
     : r.copying ? `replay arriving: ${r.copying}`
-    : inRoom() ? "trigger: new scan   ·   A/X: table top   ·   B/Y: hide room   ·   stick: retrain"
+    : inRoom() ? "trigger: new scan   ·   B/Y: real room on/off   ·   A/X: table top   ·   stick: retrain"
     : "trigger: scan   ·   grip: move   ·   both grips: resize   ·   A/X: room";
   g.fillText(hint, 44, 348);
   boardTexture.needsUpdate = true;
@@ -932,7 +943,11 @@ const xr = new SparkXr({
     $("xr").textContent = "Exit AR";
     board.visible = true;
     controls.enabled = false;
-    setTimeout(placeStage, 300); // once the session is presenting
+    setTimeout(() => {
+      // Entering AR with a room-scale scene already loaded: show it on black.
+      solidBackground = inRoom() && mesh.visible && packed.numSplats > 0;
+      placeStage();
+    }, 300); // once the session is presenting
     autoOpenCameras();
   },
   onExitXr: () => {
@@ -1010,7 +1025,7 @@ $("room").addEventListener("change", () => setRoom($("room").checked));
 
 const BUTTONS = {
   4: () => setRoom(!roomWanted), // A / X
-  5: () => { solidBackground = !solidBackground; placeStage(); }, // B / Y
+  5: () => setBackdrop(!solidBackground), // B / Y
   3: () => { if (!scan.active && !scan.pending) startTraining(); }, // thumbstick press
 };
 
