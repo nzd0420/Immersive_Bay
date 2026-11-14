@@ -123,3 +123,7 @@ scripts/deploy.sh       把服务端拷到我们的 GPU 机器并重启
 - [three.js](https://threejs.org/)(MIT)
 
 本仓库中的全部代码都是在黑客松期间编写的。GPU 机器上的 gsplat 环境,以及上面实测所用的三个测试场景,在比赛之前就已存在,两者都不在本仓库中。
+
+## 许可证
+
+[MIT](LICENSE)。`viewer/vendor/` 中内置的 three.js 和 Spark 沿用它们各自的 MIT 许可证。

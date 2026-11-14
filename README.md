@@ -157,3 +157,7 @@ Not done yet:
 All code in this repository was written during the hackathon. The gsplat environment on
 the GPU machine and the three test scenes used for the measurements above existed before
 it; neither is part of this repository.
+
+## License
+
+[MIT](LICENSE). The vendored three.js and Spark in `viewer/vendor/` keep their own MIT licenses.
