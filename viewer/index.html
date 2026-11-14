@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Splat</title>
+  <style>
+    :root { color-scheme: dark; --ink: #eef1f6; --dim: #8d95a5; --line: #2a2f3a; --accent: #7cf3c6; }
+    html, body { margin: 0; height: 100%; background: #07080b; color: var(--ink);
+      font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+    canvas { display: block; }
+    #panel { position: fixed; top: 16px; left: 16px; width: 280px; padding: 16px;
+      background: rgba(14, 16, 22, .82); border: 1px solid var(--line); border-radius: 14px;
+      backdrop-filter: blur(10px); }
+    h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: .02em; }
+    #state { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+    .row { display: flex; gap: 8px; margin-bottom: 8px; }
+    select, input, button { font: inherit; color: var(--ink); background: #151821;
+      border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0; }
+    select { flex: 1; } input { width: 76px; }
+    button { cursor: pointer; }
+    button.primary { flex: 1; background: var(--accent); color: #06231a; border-color: transparent; font-weight: 650; }
+    .check { display: flex; gap: 8px; align-items: flex-start; color: var(--dim); font-size: 12px; }
+    .check input { width: auto; margin: 2px 0 0; }
+    #replayRow { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    #copying { color: var(--accent); font-size: 12px; margin-top: 6px; min-height: 1em; }
+    #bar { height: 6px; background: #1b1f29; border-radius: 3px; overflow: hidden; margin: 12px 0 10px; }
+    #fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+    dl { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; margin: 0; font-variant-numeric: tabular-nums; }
+    dt { color: var(--dim); } dd { margin: 0; text-align: right; }
+    #hint { color: var(--dim); font-size: 12px; margin-top: 12px; }
+    #xr { position: fixed; right: 16px; bottom: 16px; padding: 14px 22px; font-size: 16px; font-weight: 650;
+      background: var(--accent); color: #06231a; border: 0; border-radius: 12px; }
+    #xr.hidden { display: none; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/",
+        "@sparkjsdev/spark": "./vendor/spark.module.js"
+    } }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <h1>Live Splat</h1>
+    <div id="state">connecting…</div>
+    <div class="row">
+      <select id="scene" aria-label="Scene"></select>
+      <input id="steps" type="number" min="500" step="500" value="7000" aria-label="Training steps">
+    </div>
+    <div class="row">
+      <button id="start" class="primary">Start training</button>
+      <button id="stop">Stop</button>
+    </div>
+    <label class="check"><input id="pace" type="checkbox"> Show every 20th step (training waits for the display)</label>
+    <div id="bar"><div id="fill"></div></div>
+    <dl>
+      <dt>Step</dt><dd id="step">–</dd>
+      <dt>Showing</dt><dd id="shown">–</dd>
+      <dt>Updates</dt><dd id="fps">–</dd>
+      <dt>Gaussians</dt><dd id="count">–</dd>
+      <dt>PSNR (held-out)</dt><dd id="psnr">–</dd>
+      <dt>Speed</dt><dd id="speed">–</dd>
+      <dt>Elapsed</dt><dd id="elapsed">–</dd>
+    </dl>
+    <div class="row" id="replayRow">
+      <select id="replays" aria-label="Recorded run"></select>
+      <button id="play">Replay</button>
+    </div>
+    <label class="check"><input id="auto" type="checkbox" checked> Replay each run when it finishes</label>
+    <div id="copying"></div>
+    <div id="hint">Drag to orbit · scroll to zoom</div>
+  </div>
+  <button id="xr" class="hidden">Enter AR</button>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
