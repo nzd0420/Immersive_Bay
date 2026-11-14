@@ -23,6 +23,10 @@ for name in succulent laptop lobby; do
   dir=$gsplat_project/local/data/\$name/reconstruction/processed
   if [ -d "\$dir/images" ]; then scenes="\$scenes --scene \$name=\$dir"; fi
 done
+# Quest scans converted by scripts/quest_to_colmap.py, uploaded to scenes/<name>/.
+for dir in $remote/scenes/*/; do
+  if [ -d "\${dir}images" ]; then scenes="\$scenes --scene \$(basename \$dir)=\${dir%/}"; fi
+done
 nohup setsid python server/live_server.py --port $port \$scenes \
   --gsplat-examples $gsplat_project/baselines/gsplat/upstream/examples \
   > logs/server.log 2>&1 < /dev/null &

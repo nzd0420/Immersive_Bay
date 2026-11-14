@@ -51,7 +51,10 @@ fi
 mkdir -p "$dest"
 echo "Pulling $name -> captures/$name"
 
-"$adb" pull "$remote/$name" "$dest/"
+# A Windows adb.exe needs a Windows path for the local side.
+local="$dest"
+command -v cygpath >/dev/null && local="$(cygpath -w "$dest")"
+"$adb" pull "$remote/$name" "$local"
 
 d="$dest/$name"
 count() { find "$d/$1" -type f 2>/dev/null | wc -l | tr -d ' '; }
