@@ -101,6 +101,33 @@ adb reverse tcp:8090 tcp:8090
 Then open `http://localhost:8090` in the Quest browser and press **Enter AR**.
 `localhost` counts as a secure context, so WebXR works without certificates.
 
+### Train on a Quest scan
+
+Record a scene with [OpenQuestCapture](https://github.com/samuelm2/OpenQuestCapture) on a
+Quest 3 or 3S (one to two minutes, moving slowly), then on a computer with Python,
+`numpy` and `opencv-python`:
+
+```bash
+scripts/pull_capture.sh                                   # newest recording -> captures/
+```
+
+```bash
+python scripts/quest_to_colmap.py captures/20261114_153012 --check
+```
+
+The converter writes `captures/20261114_153012_colmap/`, a COLMAP workspace that the
+server loads like any other: copy it to the GPU machine and pass
+`--scene myscan=/path/to/20261114_153012_colmap`. No COLMAP run is involved. Camera poses
+come from the headset's tracking (interpolated to each frame's timestamp and offset by
+each passthrough camera's lens pose), so the scene is in metres with gravity along the
+world's y axis. The initial points are the headset's depth maps, back-projected and
+coloured from the nearest frame. Frames are written as JPEG to keep the upload small.
+
+At the end it compares the colour that the left and the right camera see at the same 3D
+points. A difference far below that of unrelated pixels means the poses agree; `--check`
+also draws the points onto a few frames in `check/`. Useful options: `--every 2` (half
+the frames), `--min-sharpness 30` (drop motion-blurred frames), `--cameras left`.
+
 ## Repository layout
 
 ```text
@@ -111,6 +138,8 @@ viewer/vendor/          three.js r180 and Spark 2.4.0, vendored so the headset n
 scripts/dev_proxy.py    serves the viewer, forwards /api, copies and serves recordings
 scripts/tunnel.sh       SSH port forward to the GPU machine
 scripts/deploy.sh       copy and restart the server on our GPU machine
+scripts/pull_capture.sh copy an OpenQuestCapture recording off the headset over adb
+scripts/quest_to_colmap.py  OpenQuestCapture recording -> COLMAP workspace for training
 ```
 
 ## API
@@ -143,9 +172,12 @@ Not done yet:
 
 - **Headset test.** The WebXR path (AR session, grab, resize, trigger) is written but has
   not been run on the Quest.
-- **Training from a Quest scan.** The plan is to capture with the headset's passthrough
-  cameras and use the headset's own tracking for camera poses, which removes the COLMAP
-  step. Today the server only reads COLMAP workspaces.
+- **Training from a real Quest scan.** `scripts/quest_to_colmap.py` is written and passes
+  a synthetic round trip (a rendered fake recording with padded YUV strides, a cropped
+  sensor and asymmetric depth FOV: poses reproject within 0.1 px, depth points land on
+  the true surfaces). The conversion from the camera's Android lens pose to the head
+  frame follows OpenQuestCapture's own exporter and has not yet been checked against a
+  real recording.
 - Recordings of long runs are large. A 7000-step run has not been measured.
 
 ## Credits

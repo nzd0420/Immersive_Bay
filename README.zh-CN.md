@@ -76,6 +76,22 @@ adb reverse tcp:8090 tcp:8090
 
 然后在 Quest 浏览器里打开 `http://localhost:8090`,点 **Enter AR**。`localhost` 属于安全上下文,所以 WebXR 不需要证书就能用。
 
+### 用 Quest 扫描的场景训练
+
+先在 Quest 3 或 3S 上用 [OpenQuestCapture](https://github.com/samuelm2/OpenQuestCapture) 录一段场景(1–2 分钟,动作放慢),然后在装有 Python、`numpy` 和 `opencv-python` 的电脑上运行:
+
+```bash
+scripts/pull_capture.sh                                   # 最新的录制 -> captures/
+```
+
+```bash
+python scripts/quest_to_colmap.py captures/20261114_153012 --check
+```
+
+转换脚本会生成 `captures/20261114_153012_colmap/`,这是一个 COLMAP 工作区,服务端可以像读其他场景一样直接读取:把它拷到 GPU 机器上,启动时传 `--scene myscan=/path/to/20261114_153012_colmap`。整个过程不需要运行 COLMAP。相机位姿来自头显自身的追踪(按每帧的时间戳插值,再加上每个透视相机镜头相对头部的位姿),所以场景以米为单位,重力沿世界坐标的 y 轴。初始点云来自头显的深度图,反投影后用时间最近的一帧上色。图像存成 JPEG,方便上传。
+
+脚本最后会比较左右两个相机在同一批 3D 点上看到的颜色。如果差异远小于随机像素之间的差异,说明位姿是一致的;加 `--check` 还会把点画到几帧图像上,存在 `check/` 里。常用选项:`--every 2`(只用一半的帧)、`--min-sharpness 30`(丢掉运动模糊的帧)、`--cameras left`(只用左相机)。
+
 ## 目录结构
 
 ```text
@@ -86,6 +102,8 @@ viewer/vendor/          three.js r180 和 Spark 2.4.0,打包在仓库里,头显�
 scripts/dev_proxy.py    提供观看页面、转发 /api、下载并提供录像
 scripts/tunnel.sh       到 GPU 机器的 SSH 端口转发
 scripts/deploy.sh       把服务端拷到我们的 GPU 机器并重启
+scripts/pull_capture.sh 通过 adb 把 OpenQuestCapture 的录制从头显拷到电脑
+scripts/quest_to_colmap.py  把 OpenQuestCapture 录制转成可训练的 COLMAP 工作区
 ```
 
 ## API
@@ -113,7 +131,7 @@ scripts/deploy.sh       把服务端拷到我们的 GPU 机器并重启
 还没做完:
 
 - **头显实测。** WebXR 部分(AR 会话、抓取、缩放、扳机)已经写好,但还没在 Quest 上运行过。
-- **用 Quest 扫描的数据训练。** 计划用头显的透视相机采集,并直接用头显自身的追踪结果作为相机位姿,省掉 COLMAP 这一步。目前服务端只能读 COLMAP 工作区。
+- **用真实的 Quest 扫描训练。** `scripts/quest_to_colmap.py` 已经写好,并通过了合成数据的往返测试(用渲染出的假录制,包含带填充的 YUV 行跨度、裁剪过的传感器和不对称的深度视场:位姿重投影误差在 0.1 像素以内,深度点落在真实表面上)。从相机的 Android 镜头位姿到头部坐标系的换算沿用了 OpenQuestCapture 自己的导出代码,还没有用真实录制验证过。
 - 长时间训练的录像文件很大,7000 步的训练还没实测过。
 
 ## 致谢
