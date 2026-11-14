@@ -225,6 +225,8 @@ def make_handler(upstream_host, upstream_port, fetcher, scans):
                                     int(query["w"]), int(query["h"]), body)
                 elif url.path == "/scan/depth":
                     scans.add_depth(query["id"], float(query["t"]), body)
+                elif url.path == "/scan/reset":
+                    scans.status = {"state": "idle"}
                 elif url.path == "/scan/finish":
                     payload = json.loads(body)
                     scans.finish(query["id"], payload["poses"], payload.get("options", {}))

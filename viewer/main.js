@@ -263,6 +263,7 @@ async function readMessage(read) {
 // ---------------------------------------------------------------- live
 
 const viewerId = Math.random().toString(36).slice(2, 10);
+let mutedRun = -1; // a run whose remaining frames are to be ignored
 let liveAbort = null;
 
 async function followFrames() {
@@ -279,8 +280,9 @@ async function followFrames() {
       for (;;) {
         const message = await readMessage(read);
         if (!message) throw new Error("stream closed");
-        if (!message.payload || state.mode !== "live") continue;
         const meta = message.meta;
+        // After a reset, frames of the run that was stopped may still be on their way.
+        if (!message.payload || state.mode !== "live" || meta.run === mutedRun) continue;
         await showFrame(message.payload, meta);
         // Tell the server this frame is on screen; it keeps only a few frames in flight.
         fetch(`/api/ack?id=${viewerId}&run=${meta.run}&seq=${meta.seq}`, { method: "POST" })
@@ -575,21 +577,29 @@ function senseDepth(time, frame, pose) {
 // after the permission prompt). They must all share one attempt: opening twice gave two
 // streams per camera, whose photos overwrote each other under the same number.
 let camerasOpening = null;
-let cameraAttempt = 0; // the newest attempt; an older one that is still waiting gives up
+let camerasOpeningSince = 0;
 
-// `fresh` starts a new attempt even if one is under way: an attempt made while the tab
-// was in the background can wait forever, and must not block the button.
-function openCameras(fresh = false) {
+// One attempt at a time: a second one started while the first still holds a camera
+// fails with "Could not start video source", and then cancels the first.
+// An attempt older than 30 s is taken to be stuck and may be replaced.
+function openCameras() {
   if (scan.cameras.length) return Promise.resolve();
-  if (!camerasOpening || fresh) {
-    const attempt = ++cameraAttempt;
-    const promise = openCamerasOnce(attempt).finally(() => {
-      if (camerasOpening === promise && !scan.cameras.length) camerasOpening = null;
+  if (!camerasOpening || performance.now() - camerasOpeningSince > 30000) {
+    camerasOpeningSince = performance.now();
+    const promise = openCamerasOnce().finally(() => {
+      if (camerasOpening === promise) camerasOpening = null;
     });
     camerasOpening = promise;
   }
   return camerasOpening;
 }
+
+function closeCameras() {
+  for (const camera of scan.cameras) camera.video.srcObject?.getTracks().forEach((track) => track.stop());
+  scan.cameras.length = 0;
+}
+// A reload must hand the cameras back at once, or the new page cannot open them.
+window.addEventListener("pagehide", closeCameras);
 
 // Tells the Mac what happened on the headset, so problems can be read without a cable.
 function report(what, detail) {
@@ -602,35 +612,47 @@ window.addEventListener("unhandledrejection", (event) => report("rejection", Str
 const within = (promise, ms, what) => Promise.race([promise,
   new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not answer in ${ms / 1000} s`)), ms))]);
 
-async function openCamerasOnce(attempt) {
-  const current = () => attempt === cameraAttempt && !scan.cameras.some((c) => c.attempt !== attempt);
-  const probe = await within(navigator.mediaDevices.getUserMedia({ video: true }), 20000, "the camera"); // unlocks labels
-  probe.getTracks().forEach((track) => track.stop());
-  const devices = (await navigator.mediaDevices.enumerateDevices())
-    .filter((device) => device.kind === "videoinput" && /facing back/.test(device.label));
+// Opens one camera, trying again if it is still being released by whoever had it last.
+async function openCamera(deviceId, side) {
+  let failure = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await sleep(900);
+    let stream = null;
+    try {
+      stream = await within(navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: { ideal: 1728 }, height: { ideal: 1728 } },
+      }), 10000, `the ${side} camera`);
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await within(video.play(), 6000, `the ${side} camera picture`);
+      return video;
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
+async function openCamerasOnce() {
+  let devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  if (!devices.some((device) => device.label)) {
+    // Labels are hidden until the camera permission is given: ask for it.
+    const probe = await within(navigator.mediaDevices.getUserMedia({ video: true }), 30000, "the camera");
+    probe.getTracks().forEach((track) => track.stop());
+    await sleep(600); // let the camera be released before it is opened again
+    devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  }
+  devices = devices.filter((device) => /facing back/.test(device.label));
   report("cameras_found", devices.map((device) => device.label));
   for (const device of devices) {
     // The Quest browser lists the passthrough cameras as "camera 1" (left), "camera 2" (right).
     const side = /camera 1\b/.test(device.label) ? "left" : /camera 2\b/.test(device.label) ? "right" : "";
-    if (!side) continue;
-    const stream = await within(navigator.mediaDevices.getUserMedia({
-      video: { deviceId: { exact: device.deviceId }, width: { ideal: 1728 }, height: { ideal: 1728 } },
-    }), 10000, `the ${side} camera`);
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.srcObject = stream;
-    try {
-      await within(video.play(), 6000, `the ${side} camera picture`);
-    } catch (error) {
-      stream.getTracks().forEach((track) => track.stop());
-      throw error;
-    }
-    if (!current() || scan.cameras.some((other) => other.side === side)) {
-      stream.getTracks().forEach((track) => track.stop());
-      continue;
-    }
-    const camera = { side, video, last: 0, attempt };
+    if (!side || scan.cameras.some((other) => other.side === side)) continue;
+    const video = await openCamera(device.deviceId, side);
+    const camera = { side, video, last: 0 };
     scan.cameras.push(camera);
     const onFrame = (now, metadata) => {
       video.requestVideoFrameCallback(onFrame);
@@ -750,6 +772,45 @@ async function finishScan() {
 }
 
 let scanToggled = 0;
+// Back to a clean start: stop any training, forget the scene on screen and any scan in
+// progress, put the settings back, and show the real room, ready for a new scan.
+async function resetAll() {
+  stopReplay();
+  mutedRun = state.status?.run ?? state.run;
+  scan.active = false;
+  scan.pending = "";
+  scan.photos = 0;
+  scan.poses = [];
+  scan.note = "";
+  scanToggled = 0;
+  markers.clear();
+  depth.count = 0;
+  depthGeometry.setDrawRange(0, 0);
+  depthCloud.visible = false;
+  packed.numSplats = 0;
+  packed.needsUpdate = true;
+  mesh.updateVersion();
+  mesh.visible = false;
+  shownCount = 0;
+  state.meta = null;
+  sceneInfo = null;
+  roomWanted = true;
+  $("room").checked = true;
+  $("pace").checked = false;
+  $("auto").checked = false;
+  $("steps").value = 3000;
+  setBackdrop(false);
+  placeStage();
+  render();
+  await Promise.all([
+    fetch("/api/reset", { method: "POST" }).catch(() => {}),
+    fetch("/scan/reset", { method: "POST" }).catch(() => {}),
+  ]);
+  openCameras().catch(() => {});
+  render();
+}
+$("reset").addEventListener("click", resetAll);
+
 function toggleScan() {
   // One pull of the trigger can register twice; a scan that short has nothing in it.
   if (performance.now() - scanToggled < 2500) return;
@@ -788,11 +849,13 @@ async function followScan() {
 $("cameras").addEventListener("click", () => {
   scan.note = "opening the cameras…";
   render();
-  openCameras(true).then(() => {
+  openCameras().then(() => {
     scan.note = scan.cameras.length ? "" : "no passthrough camera found in this browser";
     render();
   }).catch((error) => {
-    scan.note = `camera: ${error.message}`;
+    scan.note = /video source/.test(error.message)
+      ? "the cameras are in use: close other tabs of this page, then press again"
+      : `camera: ${error.message}`;
     report("camera_error", `${error.name}: ${error.message}`);
     render();
   });
@@ -962,8 +1025,8 @@ function drawBoard(r) {
   g.font = "28px system-ui, sans-serif";
   const hint = scan.note ? scan.note
     : r.copying ? `replay arriving: ${r.copying}`
-    : inRoom() ? "trigger: new scan   ·   B/Y: real room on/off   ·   A/X: table top   ·   stick: retrain"
-    : "trigger: scan   ·   grip: move   ·   both grips: resize   ·   A/X: room";
+    : inRoom() ? "trigger: new scan   ·   B/Y: real room on/off   ·   A/X: table top   ·   stick: reset"
+    : "trigger: scan   ·   grip: move   ·   both grips: resize   ·   stick: reset";
   g.fillText(hint, 44, 348);
   boardTexture.needsUpdate = true;
 }
@@ -1012,7 +1075,7 @@ window.liveSplat = { xr, spark, packed, mesh, content, state, scan, depth, THREE
 // Hologram: grip moves it, both grips resize it. Room: grip slides the whole scene, both
 // grips also turn it about the vertical, to line it up with the real room.
 // Trigger starts and finishes a scan. A/X switches hologram and room; B/Y hides the real
-// room; pressing a thumbstick trains the current scene again.
+// room; pressing a thumbstick resets everything, ready for a new scan.
 const hands = [0, 1].map((index) => {
   const grip = renderer.xr.getControllerGrip(index);
   localFrame.add(grip);
@@ -1072,7 +1135,7 @@ $("room").addEventListener("change", () => setRoom($("room").checked));
 const BUTTONS = {
   4: () => setRoom(!roomWanted), // A / X
   5: () => setBackdrop(!solidBackground), // B / Y
-  3: () => { if (!scan.active && !scan.pending) startTraining(); }, // thumbstick press
+  3: resetAll, // thumbstick press
 };
 
 function pollButtons() {

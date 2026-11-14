@@ -807,6 +807,13 @@ def make_handler(app: App):
                     if app.session:
                         app.session.stop()
                     return self._json({"ok": True})
+                if url.path == "/api/reset":  # stop, and leave nothing for viewers to show
+                    with app.lock:
+                        if app.session:
+                            app.session.stop()
+                            app.session.thread.join(timeout=30)
+                        app.session = None
+                    return self._json({"ok": True})
             except Exception as error:  # report bad requests to the caller
                 return self._json({"ok": False, "error": str(error)}, 400)
             self._send(404)
