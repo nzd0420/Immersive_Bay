@@ -163,22 +163,24 @@ that every 20th step is shown live, at the cost of a run about three times longe
 
 ## Status
 
-Working, checked in a desktop browser:
+Working:
 
 - training server, live frame stream, flow control
 - recording, background copy to the Mac, looping replay
+- the viewer in passthrough AR on a Quest 3S, over `adb reverse`
+- training from a real Quest scan: a 19-second walk through a room (112 frames, 51,000
+  initial points from the depth maps) loads without COLMAP and trains 3000 steps in 42 s.
+  It reaches about 21 dB PSNR on held-out views: recognisable but soft, as expected for a
+  short whole-room pass with people moving in it.
 
 Not done yet:
 
-- **Headset test.** The WebXR path (AR session, grab, resize, trigger) is written but has
-  not been run on the Quest.
-- **Training from a real Quest scan.** `scripts/quest_to_colmap.py` is written and passes
-  a synthetic round trip (a rendered fake recording with padded YUV strides, a cropped
-  sensor and asymmetric depth FOV: poses reproject within 0.1 px, depth points land on
-  the true surfaces). The conversion from the camera's Android lens pose to the head
-  frame follows OpenQuestCapture's own exporter and has not yet been checked against a
-  real recording.
-- Recordings of long runs are large. A 7000-step run has not been measured.
+- A careful scan of a still object, which is what the demo will show. Quality on that
+  kind of capture has not been measured.
+- Recordings of long runs are large (119 MB for the 3000-step room scan above). A
+  7000-step run has not been measured.
+- Scanning and training are separate steps: the recording is copied off the headset,
+  converted and uploaded by hand.
 
 ## Credits
 
