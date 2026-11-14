@@ -201,7 +201,8 @@ def depth_points(captures: list, frames: list, lenses: dict, times: dict, images
     return xyz[first], rgb[first]
 
 
-def build_workspace(scan_dir: Path, out: Path, calibration: dict, latency_ms: float) -> dict:
+def build_workspace(scan_dir: Path, out: Path, calibration: dict, latency_ms: float,
+                    window_ms: float = 200.0, copy_images: bool = True) -> dict:
     """Pair every received frame with its camera pose and write the COLMAP workspace."""
     history = PoseHistory(json.loads((scan_dir / "poses.json").read_text()))
     records = [json.loads(line) for line in (scan_dir / "frames.jsonl").read_text().splitlines() if line]
@@ -214,13 +215,14 @@ def build_workspace(scan_dir: Path, out: Path, calibration: dict, latency_ms: fl
         if side not in ids:
             ids[side] = len(ids) + 1
             lenses[ids[side]] = Lens(calibration[side], record["width"], record["height"])
-        head = history.at(record["t"] - latency_ms)
+        head = history.at(record["t"] - latency_ms, window_ms)
         if head is None:
             dropped += 1
             continue
         R, C = lenses[ids[side]].pose(*head)
         name = f"{side}_{record['n']:04d}.jpg"
-        shutil.copyfile(scan_dir / "frames" / name, out / "images" / name)
+        if copy_images:
+            shutil.copyfile(scan_dir / "frames" / name, out / "images" / name)
         frames.append((name, ids[side], R, C))
         times[name] = record["t"]
     if len(frames) < 8:
@@ -228,7 +230,7 @@ def build_workspace(scan_dir: Path, out: Path, calibration: dict, latency_ms: fl
 
     captures = read_depth(scan_dir)
     if sum(len(points) for _, points in captures) >= 3000:
-        points, colours = depth_points(captures, frames, lenses, times, out / "images")
+        points, colours = depth_points(captures, frames, lenses, times, scan_dir / "frames")
         seeded = "depth sensor"
     else:
         # No depth: seed points along the view rays, where the cameras were looking.
@@ -283,7 +285,10 @@ class Scans:
             raise ValueError("bad side")
         scan_dir = self._dir(scan_id)
         (scan_dir / "frames").mkdir(parents=True, exist_ok=True)
-        (scan_dir / "frames" / f"{side}_{n:04d}.jpg").write_bytes(jpeg)
+        path = scan_dir / "frames" / f"{side}_{n:04d}.jpg"
+        if path.exists():
+            raise ValueError(f"photo {path.name} was already received")
+        path.write_bytes(jpeg)
         with self.lock:
             with open(scan_dir / "frames.jsonl", "a") as f:
                 f.write(json.dumps({"side": side, "n": n, "t": t, "width": width, "height": height}) + "\n")

@@ -397,7 +397,8 @@ $("play").addEventListener("click", () => {
 // come back exactly where the real things are.
 const SCAN = { everyMs: 450, size: 1024, maxPhotos: 240, maxTurn: 50 };
 const scan = { cameras: [], active: false, pending: "", id: "", photos: 0, sending: 0,
-  poses: [], last: null, turning: 0, note: "", timebase: "raf" };
+  poses: [], last: null, turning: 0, note: "", timebase: "raf",
+  numbers: { left: 0, right: 0 }, poseAt: 0, timing: null };
 
 // Small dots where photos were taken, so coverage is visible while scanning.
 const markers = new THREE.Group();
@@ -550,7 +551,18 @@ function senseDepth(time, frame, pose) {
     .catch(() => {}).finally(() => { scan.sending -= 1; });
 }
 
-async function openCameras() {
+// Several things can ask for the cameras at once (the button, the tab regaining focus
+// after the permission prompt). They must all share one attempt: opening twice gave two
+// streams per camera, whose photos overwrote each other under the same number.
+let camerasOpening = null;
+function openCameras() {
+  camerasOpening ||= openCamerasOnce().finally(() => {
+    if (!scan.cameras.length) camerasOpening = null; // failed: allow another try
+  });
+  return camerasOpening;
+}
+
+async function openCamerasOnce() {
   if (scan.cameras.length) return;
   const probe = await navigator.mediaDevices.getUserMedia({ video: true }); // unlocks labels
   probe.getTracks().forEach((track) => track.stop());
@@ -568,12 +580,19 @@ async function openCameras() {
     video.playsInline = true;
     video.srcObject = stream;
     await video.play();
-    const camera = { side, video, last: 0, n: 0 };
+    if (scan.cameras.some((other) => other.side === side)) {
+      stream.getTracks().forEach((track) => track.stop());
+      continue;
+    }
+    const camera = { side, video, last: 0 };
     scan.cameras.push(camera);
     const onFrame = (now, metadata) => {
       video.requestVideoFrameCallback(onFrame);
-      const ready = scan.active && now - camera.last >= SCAN.everyMs && scan.sending < 4
-        && scan.photos < SCAN.maxPhotos && scan.turning < SCAN.maxTurn;
+      // No photo without a fresh head pose: the AR frame loop stops while the system
+      // menu is up or the headset is off, and the cameras keep running.
+      const tracked = performance.now() - scan.poseAt < 150;
+      const ready = scan.active && tracked && now - camera.last >= SCAN.everyMs
+        && scan.sending < 6 && scan.photos < SCAN.maxPhotos && scan.turning < SCAN.maxTurn;
       if (!ready) return;
       camera.last = now;
       photograph(camera, metadata.captureTime ?? now);
@@ -584,9 +603,10 @@ async function openCameras() {
 }
 
 async function photograph(camera, time) {
-  const n = camera.n++;
+  const n = scan.numbers[camera.side]++;
   scan.photos += 1;
   scan.sending += 1;
+  const started = performance.now();
   if (scan.last && camera.side === "left") {
     const dot = new THREE.Mesh(markerGeometry, markerMaterial);
     dot.position.fromArray(scan.last.p);
@@ -599,9 +619,13 @@ async function photograph(camera, time) {
     const canvas = new OffscreenCanvas(SCAN.size, SCAN.size);
     canvas.getContext("2d").drawImage(bitmap, 0, 0);
     bitmap.close();
-    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.9 });
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 });
+    const encoded = performance.now();
     const query = `id=${scan.id}&side=${camera.side}&n=${n}&t=${time}&w=${SCAN.size}&h=${SCAN.size}`;
     await fetch(`/scan/frame?${query}`, { method: "POST", body: blob });
+    // how long a photo takes to prepare and to send, for tuning
+    scan.timing = { encodeMs: Math.round(encoded - started), sendMs: Math.round(performance.now() - encoded),
+      bytes: blob.size };
   } catch (error) {
     console.warn("photo not sent", error);
   } finally {
@@ -622,6 +646,7 @@ function recordPose(time, frame) {
     scan.turning = 0.8 * scan.turning + 0.2 * speed;
   }
   scan.last = { t, p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+  scan.poseAt = performance.now();
   if (!scan.active) return;
   scan.poses.push([t, p.x, p.y, p.z, q.x, q.y, q.z, q.w]);
   senseDepth(time, frame, pose);
@@ -642,7 +667,8 @@ function startScan() {
   scan.poses = [];
   scan.note = "";
   scan.pending = "";
-  for (const camera of scan.cameras) Object.assign(camera, { n: 0, last: 0 });
+  for (const camera of scan.cameras) camera.last = 0;
+  scan.numbers = { left: 0, right: 0 };
   markers.clear();
   markers.visible = true;
   depth.count = 0;
@@ -674,7 +700,11 @@ async function finishScan() {
   render();
 }
 
+let scanToggled = 0;
 function toggleScan() {
+  // One pull of the trigger can register twice; a scan that short has nothing in it.
+  if (performance.now() - scanToggled < 2500) return;
+  scanToggled = performance.now();
   if (scan.active) finishScan();
   else if (!scan.pending) startScan();
 }
