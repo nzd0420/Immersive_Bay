@@ -565,36 +565,62 @@ function senseDepth(time, frame, pose) {
 // after the permission prompt). They must all share one attempt: opening twice gave two
 // streams per camera, whose photos overwrote each other under the same number.
 let camerasOpening = null;
-function openCameras() {
-  camerasOpening ||= openCamerasOnce().finally(() => {
-    if (!scan.cameras.length) camerasOpening = null; // failed: allow another try
-  });
+let cameraAttempt = 0; // the newest attempt; an older one that is still waiting gives up
+
+// `fresh` starts a new attempt even if one is under way: an attempt made while the tab
+// was in the background can wait forever, and must not block the button.
+function openCameras(fresh = false) {
+  if (scan.cameras.length) return Promise.resolve();
+  if (!camerasOpening || fresh) {
+    const attempt = ++cameraAttempt;
+    const promise = openCamerasOnce(attempt).finally(() => {
+      if (camerasOpening === promise && !scan.cameras.length) camerasOpening = null;
+    });
+    camerasOpening = promise;
+  }
   return camerasOpening;
 }
 
-async function openCamerasOnce() {
-  if (scan.cameras.length) return;
-  const probe = await navigator.mediaDevices.getUserMedia({ video: true }); // unlocks labels
+// Tells the Mac what happened on the headset, so problems can be read without a cable.
+function report(what, detail) {
+  fetch("/debug/log", { method: "POST", body: JSON.stringify({ [what]: detail, at: Date.now() }) })
+    .catch(() => {});
+}
+window.addEventListener("error", (event) => report("error", String(event.message)));
+window.addEventListener("unhandledrejection", (event) => report("rejection", String(event.reason)));
+
+const within = (promise, ms, what) => Promise.race([promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not answer in ${ms / 1000} s`)), ms))]);
+
+async function openCamerasOnce(attempt) {
+  const current = () => attempt === cameraAttempt && !scan.cameras.some((c) => c.attempt !== attempt);
+  const probe = await within(navigator.mediaDevices.getUserMedia({ video: true }), 20000, "the camera"); // unlocks labels
   probe.getTracks().forEach((track) => track.stop());
   const devices = (await navigator.mediaDevices.enumerateDevices())
     .filter((device) => device.kind === "videoinput" && /facing back/.test(device.label));
+  report("cameras_found", devices.map((device) => device.label));
   for (const device of devices) {
     // The Quest browser lists the passthrough cameras as "camera 1" (left), "camera 2" (right).
     const side = /camera 1\b/.test(device.label) ? "left" : /camera 2\b/.test(device.label) ? "right" : "";
     if (!side) continue;
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await within(navigator.mediaDevices.getUserMedia({
       video: { deviceId: { exact: device.deviceId }, width: { ideal: 1728 }, height: { ideal: 1728 } },
-    });
+    }), 10000, `the ${side} camera`);
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
     video.srcObject = stream;
-    await video.play();
-    if (scan.cameras.some((other) => other.side === side)) {
+    try {
+      await within(video.play(), 6000, `the ${side} camera picture`);
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
+    if (!current() || scan.cameras.some((other) => other.side === side)) {
       stream.getTracks().forEach((track) => track.stop());
       continue;
     }
-    const camera = { side, video, last: 0 };
+    const camera = { side, video, last: 0, attempt };
     scan.cameras.push(camera);
     const onFrame = (now, metadata) => {
       video.requestVideoFrameCallback(onFrame);
@@ -609,6 +635,7 @@ async function openCamerasOnce() {
     };
     video.requestVideoFrameCallback(onFrame);
   }
+  report("cameras_open", scan.cameras.map((camera) => camera.side));
   render();
 }
 
@@ -747,10 +774,18 @@ async function followScan() {
   }
 }
 
-$("cameras").addEventListener("click", () => openCameras().catch((error) => {
-  scan.note = `camera: ${error.message}`;
+$("cameras").addEventListener("click", () => {
+  scan.note = "opening the cameras…";
   render();
-}));
+  openCameras(true).then(() => {
+    scan.note = scan.cameras.length ? "" : "no passthrough camera found in this browser";
+    render();
+  }).catch((error) => {
+    scan.note = `camera: ${error.message}`;
+    report("camera_error", `${error.name}: ${error.message}`);
+    render();
+  });
+});
 $("scan").addEventListener("click", toggleScan);
 // Once the camera permission has been given, open the cameras without being asked:
 // on load, when the tab comes to the front, and on entering AR. A tab in the background
