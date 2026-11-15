@@ -261,6 +261,33 @@ def build_workspace(scan_dir: Path, out: Path, calibration: dict, latency_ms: fl
     return summary
 
 
+def photo_poses(scan_dir: Path, calibration: dict, latency_ms: float, side: str = "left",
+                window_ms: float = 200.0) -> dict:
+    """Where each photo of one camera was taken, in three.js room coordinates.
+
+    The same poses that training uses, for a viewer that wants to stand where a photo
+    was taken and compare it with the reconstruction. Also the camera's field of view.
+    """
+    history = PoseHistory(json.loads((scan_dir / "poses.json").read_text()))
+    records = [json.loads(line) for line in (scan_dir / "frames.jsonl").read_text().splitlines() if line]
+    lens, photos = None, []
+    for record in sorted(records, key=lambda r: r["t"]):
+        if record["side"] != side:
+            continue
+        lens = lens or Lens(calibration[side], record["width"], record["height"])
+        head = history.at(record["t"] - latency_ms, window_ms)
+        if head is None:
+            continue
+        R, C = lens.pose(*head)  # COLMAP world, OpenCV camera
+        w, x, y, z = matrix_to_qvec(FLIP @ R @ FLIP)  # three.js world, three.js camera
+        photos.append({"name": f"{side}_{record['n']:04d}.jpg", "t": record["t"],
+                       "p": (FLIP @ C).tolist(), "q": [x, y, z, w]})
+    if lens is None:
+        return {"photos": [], "fov": 0.0}
+    fov = float(np.degrees(2 * np.arctan(lens.height / 2 / lens.fy)))
+    return {"photos": photos, "fov": fov}
+
+
 class Scans:
     """Receives scans from the viewer and turns each into a training run."""
 

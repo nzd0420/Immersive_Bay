@@ -95,6 +95,21 @@ function setSplatOpacity(value) {
 
 // Called every frame: moves the fade along and applies it.
 function applyView(seconds) {
+  if (walking()) {
+    // The desktop walk: the photo stands in for the real room.
+    const move = seconds / (2 * FADE_SECONDS);
+    view.at = view.at < view.target ? Math.min(view.target, view.at + move)
+      : Math.max(view.target, view.at - move);
+    const photo = 1 - Math.min(1, view.at * 2);
+    const reconstruction = Math.max(0, view.at * 2 - 1);
+    backdrop.visible = false;
+    photoPlane.visible = photo > 0;
+    photoPlane.material.opacity = photo;
+    walkMarkers.visible = photo > 0.5;
+    mesh.visible = state.hasScene && reconstruction > 0;
+    setSplatOpacity(reconstruction);
+    return;
+  }
   if (!renderer.xr.isPresenting || !inRoom()) {
     // On a desktop, and for the table-top hologram, there is just the scene.
     backdrop.visible = false;
@@ -920,58 +935,132 @@ window.addEventListener("focus", autoOpenCameras);
 
 // ---------------------------------------------------------------- first-person replay
 
-// On a desktop, retrace the scan: the camera follows the head path that was recorded
-// while scanning, as the reconstruction trains or replays. Recording the window then
-// gives the view from inside the headset, without the headset.
-const FLY_FOV = Number(new URLSearchParams(location.search).get("fov")) || 80;
-const fly = { on: false, scene: "", rows: null, time: 0, speed: 1, paused: false };
+// On a desktop, retrace a scan from the inside. The camera moves through the positions
+// the photos were taken from. In the "real" state it shows those photos, which are what
+// the headset's camera saw; in the other it shows the reconstruction from the same
+// place with the same field of view, so the two line up. B switches between them with
+// the same fade through black as in the headset. Recording the window gives the view
+// from inside the headset, without the headset.
+const FLY_FOV = Number(new URLSearchParams(location.search).get("fov")) || 0;
+const fly = { on: false, scene: "", photos: null, starts: null, length: 0, fov: 73, time: 0,
+  speed: 1, paused: false, index: -1 };
 const flyFrom = new THREE.Quaternion(), flyTo = new THREE.Quaternion();
 
-async function loadPath(name) {
-  fly.scene = name;
-  fly.rows = null;
-  try {
-    const rows = await (await fetch(`/scan/poses?id=${name}`)).json();
-    if (fly.scene === name && rows.length > 2) {
-      fly.rows = rows;
-      fly.time = 0;
+// The photo being shown: a plane fixed in front of the camera, as wide as the photo's
+// field of view, drawn over everything else.
+const photoPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+);
+photoPlane.renderOrder = 900;
+photoPlane.frustumCulled = false;
+photoPlane.visible = false;
+camera.add(photoPlane);
+const photoTextures = new Map();
+const photoLoader = new THREE.TextureLoader();
+
+// Markers where photos have been taken so far, drawn over the photo as in the headset.
+const walkMarkers = new THREE.Group();
+walkMarkers.visible = false;
+scene.add(walkMarkers);
+const walkMarkerMaterial = new THREE.MeshBasicMaterial(
+  { color: 0x7cf3c6, wireframe: true, depthTest: false, transparent: true });
+
+function photoTexture(index) {
+  const photo = fly.photos[index];
+  if (!photoTextures.has(photo.name)) {
+    const texture = photoLoader.load(`/scan/photo?id=${fly.scene}&name=${photo.name}`);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    photoTextures.set(photo.name, texture);
+    if (photoTextures.size > 24) {
+      const oldest = photoTextures.keys().next().value;
+      photoTextures.get(oldest).dispose();
+      photoTextures.delete(oldest);
     }
+  }
+  return photoTextures.get(photo.name);
+}
+
+// The scan to retrace: the scene being shown, or before that the one picked in the list.
+const walkScene = () => (sceneInfo?.anchored ? sceneInfo.name
+  : !sceneInfo && /^scan-/.test($("scene").value) ? $("scene").value : "");
+
+async function loadWalk(name) {
+  fly.scene = name;
+  fly.photos = null;
+  for (const texture of photoTextures.values()) texture.dispose();
+  photoTextures.clear();
+  walkMarkers.clear();
+  try {
+    const found = await (await fetch(`/scan/photos?id=${name}`)).json();
+    if (fly.scene !== name || !found.photos || found.photos.length < 3) return;
+    // Long gaps (tracking was paused, or the walker stood still) are shortened.
+    const starts = [0];
+    for (let i = 1; i < found.photos.length; i++) {
+      starts.push(starts[i - 1] + Math.min(1500, found.photos[i].t - found.photos[i - 1].t));
+    }
+    for (const photo of found.photos) {
+      const marker = new THREE.Mesh(markerGeometry, walkMarkerMaterial);
+      marker.position.fromArray(photo.p);
+      marker.quaternion.fromArray(photo.q);
+      marker.renderOrder = 950;
+      marker.visible = false;
+      walkMarkers.add(marker);
+    }
+    Object.assign(fly, { photos: found.photos, starts, length: starts[starts.length - 1] + 700,
+      fov: found.fov, time: 0, index: -1 });
+    applyFlyLens();
   } catch (error) {
-    // no path for this scene
+    // no photos for this scene
   }
   render();
 }
 
-// Moves the camera along the path; false when there is no path to follow.
+const walking = () => fly.on && !!fly.photos && !renderer.xr.isPresenting;
+
+function applyFlyLens() {
+  camera.fov = fly.on ? (FLY_FOV || fly.fov) : 55;
+  camera.updateProjectionMatrix();
+  photoPlane.position.set(0, 0, -1);
+  photoPlane.scale.setScalar(2 * Math.tan(THREE.MathUtils.degToRad(fly.fov) / 2));
+}
+
+// Moves the camera along the walk; false when there is nothing to follow.
 function flyCamera(seconds) {
-  if (!fly.on || renderer.xr.isPresenting || !sceneInfo?.anchored) return false;
-  if (fly.scene !== sceneInfo.name) loadPath(sceneInfo.name);
-  const rows = fly.rows;
-  if (!rows) return false;
-  const start = rows[0][0], length = rows[rows.length - 1][0] - start;
-  if (!fly.paused) fly.time = (fly.time + seconds * 1000 * fly.speed) % length;
-  const t = start + fly.time;
-  let low = 0, high = rows.length - 1;
-  while (high - low > 1) {
-    const middle = (low + high) >> 1;
-    if (rows[middle][0] <= t) low = middle;
-    else high = middle;
+  if (!fly.on || renderer.xr.isPresenting) return false;
+  const name = walkScene();
+  if (name && fly.scene !== name) loadWalk(name);
+  const photos = fly.photos;
+  if (!photos) return false;
+  if (!fly.paused) fly.time = (fly.time + seconds * 1000 * fly.speed) % fly.length;
+  let index = 0;
+  while (index < photos.length - 1 && fly.starts[index + 1] <= fly.time) index += 1;
+  const a = photos[index], b = photos[Math.min(index + 1, photos.length - 1)];
+  const span = (fly.starts[index + 1] ?? fly.length) - fly.starts[index];
+  // Paused: stand exactly where the photo was taken, so it and the reconstruction match.
+  const k = fly.paused ? 0 : Math.min(1, (fly.time - fly.starts[index]) / Math.max(1, span));
+  camera.position.set(a.p[0] + (b.p[0] - a.p[0]) * k, a.p[1] + (b.p[1] - a.p[1]) * k, a.p[2] + (b.p[2] - a.p[2]) * k);
+  camera.quaternion.copy(flyFrom.fromArray(a.q)).slerp(flyTo.fromArray(b.q), k);
+  if (index !== fly.index) {
+    fly.index = index;
+    photoPlane.material.map = photoTexture(index);
+    photoPlane.material.needsUpdate = true;
+    for (let ahead = 1; ahead <= 4; ahead++) if (index + ahead < photos.length) photoTexture(index + ahead);
+    walkMarkers.children.forEach((marker, i) => { marker.visible = i < index; });
   }
-  const a = rows[low], b = rows[high];
-  // Tracking paused here during the scan: jump over the gap instead of gliding through it.
-  const k = b[0] - a[0] > 500 ? 1 : (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
-  camera.position.set(a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k);
-  camera.quaternion.copy(flyFrom.set(a[4], a[5], a[6], a[7])).slerp(flyTo.set(b[4], b[5], b[6], b[7]), k);
   return true;
 }
 
 function setFly(on) {
   fly.on = on;
   $("fly").checked = on;
-  camera.fov = on ? FLY_FOV : 55;
-  camera.updateProjectionMatrix();
+  applyFlyLens();
   document.body.style.background = on ? "#000" : "";
-  if (!on) placeStage(); // back to the orbit view
+  if (!on) {
+    photoPlane.visible = false;
+    walkMarkers.visible = false;
+    placeStage(); // back to the orbit view
+  }
   render();
 }
 $("fly").addEventListener("change", () => setFly($("fly").checked));
@@ -981,16 +1070,20 @@ $("flySpeed").addEventListener("input", () => {
 });
 window.addEventListener("keydown", (event) => {
   if (/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) return;
-  if (event.key === "h" || event.key === "H") {
+  const key = event.key.toLowerCase();
+  if (key === "h") {
     // hide the controls, for a clean recording
     const hidden = $("panel").style.display !== "none";
     $("panel").style.display = hidden ? "none" : "";
     $("xr").style.visibility = hidden ? "hidden" : "";
-  } else if (event.key === " ") {
+  } else if (key === " ") {
     fly.paused = !fly.paused;
     event.preventDefault();
-  } else if (event.key === "r" || event.key === "R") {
+  } else if (key === "r") {
     fly.time = 0;
+  } else if (key === "b" && walking()) {
+    // the real photos, or the reconstruction (only once there is one)
+    showReconstruction(view.target === 0 && state.hasScene);
   }
 });
 
@@ -1062,9 +1155,9 @@ function render() {
   $("play").textContent = r.replay ? "Back to live" : "Replay";
   $("copying").textContent = r.copying ? `Copying the latest recording: ${r.copying}` : "";
   $("flyNote").textContent = !fly.on ? ""
-    : !sceneInfo?.anchored ? "pick a scene scanned in the headset (scan-…)"
-    : fly.rows ? "H: hide controls · Space: pause the walk · R: back to the start"
-    : "no head path found for this scene";
+    : !walkScene() ? "pick a scene scanned in the headset (scan-…)"
+    : fly.photos ? "B: real photos / reconstruction · H: hide controls · Space: pause · R: restart the walk"
+    : "no photos found for this scene on this Mac";
   $("count").textContent = r.count ? r.count.toLocaleString() : "–";
   $("psnr").textContent = r.psnr ? `${r.psnr.toFixed(1)} dB` : "–";
   $("speed").textContent = r.speed ? `${r.speed.toFixed(0)} steps/s` : "–";
@@ -1188,7 +1281,7 @@ const xr = new SparkXr({
 // reconstruction sits exactly on those surfaces, so it must not be hidden by them.
 renderer.xr.getDepthSensingMesh = () => null;
 
-window.liveSplat = { xr, spark, packed, mesh, content, state, scan, depth, THREE, PackedSplats, SplatMesh };
+window.liveSplat = { xr, spark, packed, mesh, content, state, scan, depth, fly, view, camera, THREE, PackedSplats, SplatMesh };
 
 // Hologram: grip moves it, both grips resize it. Room: grip slides the whole scene, both
 // grips also turn it about the vertical, to line it up with the real room.

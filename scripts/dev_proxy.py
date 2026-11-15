@@ -22,7 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from webxr_scan import Scans
+import re
+
+from webxr_scan import Scans, photo_poses
 
 ROOT = (Path(__file__).resolve().parent.parent / "viewer").resolve()
 RECORDINGS = (Path(__file__).resolve().parent.parent / "recordings").resolve()
@@ -178,6 +180,24 @@ def make_handler(upstream_host, upstream_port, fetcher, scans):
                 self.close_connection = True
 
         def do_GET(self):
+            if self.path.startswith("/scan/photos"):
+                # Every left-camera photo of a scan with the pose it was taken from.
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    found = photo_poses(scans._dir(query["id"][0]), scans.calibration, scans.latency_ms)
+                except (KeyError, ValueError, OSError):
+                    return self._reply(404, b"{}", "application/json")
+                return self._reply(200, json.dumps(found).encode(), "application/json")
+            if self.path.startswith("/scan/photo?"):
+                query = parse_qs(urlparse(self.path).query)
+                name = query.get("name", [""])[0]
+                try:
+                    if not re.fullmatch(r"(left|right)_\d{4}\.jpg", name):
+                        raise ValueError(name)
+                    data = (scans._dir(query["id"][0]) / "frames" / name).read_bytes()
+                except (KeyError, ValueError, OSError):
+                    return self._reply(404, b"not found")
+                return self._reply(200, data, "image/jpeg")
             if self.path.startswith("/scan/poses"):
                 # The head path of a recorded scan, thinned to about 30 samples a second,
                 # so a desktop viewer can retrace it.
