@@ -57,23 +57,61 @@ window.addEventListener("resize", () => {
 // Room scale needs a scan in metres with a known floor, which a Quest scan provides.
 let sceneInfo = null; // from the server's status, or a recording's intro message
 let roomWanted = true;
-let solidBackground = false;
 
+// At room scale the viewer sees either the real room or the reconstruction, never one
+// over the other. Switching fades through black: the reconstruction fades out, then
+// the black gives way to the room, and the other way round.
+//
 // In AR the real room shows wherever nothing opaque is drawn, and three.js always clears
 // to transparent there, whatever clear colour is set. So hiding the room takes a real
 // object: a black sphere around the viewer, drawn before everything else.
+const FADE_SECONDS = 0.3; // each half of a switch
+const view = { target: 0, at: 0 }; // 0 = the real room, 1 = the reconstruction
 const backdrop = new THREE.Mesh(
   new THREE.SphereGeometry(40, 24, 12),
-  new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, depthTest: false, depthWrite: false }),
+  new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, transparent: true,
+    opacity: 0, depthTest: false, depthWrite: false }),
 );
 backdrop.renderOrder = -1000;
 backdrop.frustumCulled = false;
 backdrop.visible = false;
 camera.add(backdrop);
 
-function setBackdrop(solid) {
-  solidBackground = solid;
-  backdrop.visible = renderer.xr.isPresenting && solidBackground;
+function showReconstruction(wanted) {
+  view.target = wanted ? 1 : 0;
+}
+
+// Straight to the real room: only the black is left to fade (used when the scene is gone).
+function showRoomNow() {
+  view.target = 0;
+  view.at = Math.min(view.at, 0.5);
+}
+
+function setSplatOpacity(value) {
+  if (mesh.opacity === value) return;
+  mesh.opacity = value;
+  mesh.updateVersion();
+}
+
+// Called every frame: moves the fade along and applies it.
+function applyView(seconds) {
+  if (!renderer.xr.isPresenting || !inRoom()) {
+    // On a desktop, and for the table-top hologram, there is just the scene.
+    backdrop.visible = false;
+    mesh.visible = state.hasScene;
+    setSplatOpacity(1);
+    view.at = view.target;
+    return;
+  }
+  const step = seconds / (2 * FADE_SECONDS);
+  view.at = view.at < view.target ? Math.min(view.target, view.at + step)
+    : Math.max(view.target, view.at - step);
+  const black = Math.min(1, view.at * 2); // first half of the way: the room goes black
+  const splats = Math.max(0, view.at * 2 - 1); // second half: the reconstruction appears
+  backdrop.visible = black > 0;
+  backdrop.material.opacity = black;
+  mesh.visible = state.hasScene && splats > 0;
+  setSplatOpacity(splats);
 }
 
 // The capture world has y down and z forward; three.js has y up and z towards the viewer.
@@ -144,7 +182,6 @@ function placeStage() {
     controls.target.set(0, 0, 0);
   }
   placeBoard();
-  setBackdrop(solidBackground);
 }
 
 // The viewer lines the room up with reality by hand; remember it for this scene.
@@ -175,7 +212,7 @@ content.add(mesh);
 
 // mode: "live" follows the training server; "replay" plays a recorded run from this Mac.
 const state = { mode: "live", run: 0, meta: null, status: null, frames: 0, fps: 0,
-  replay: null, recordings: [] };
+  replay: null, recordings: [], hasScene: false };
 let fpsMark = { time: performance.now(), frames: 0 };
 
 let shownCount = 0;
@@ -200,10 +237,10 @@ async function showFrame(payload, meta) {
     for (let i = 0, at = column; i < count; i++, at += 16) rows[at] += plane[i];
   }
   shownCount = count;
-  // The first frame of a room-scale reconstruction: black out the real room, so what
-  // is seen is only what was rebuilt. (B/Y brings the room back.)
-  if (!mesh.visible && inRoom()) setBackdrop(true);
-  mesh.visible = true;
+  // The first frame of a reconstruction: switch from the real room to it. Later frames
+  // leave the choice alone, so B/Y can keep the real room in view while it trains.
+  if (!state.hasScene) showReconstruction(true);
+  state.hasScene = true;
   markers.visible = false;
   depthCloud.visible = false;
   packed.numSplats = count;
@@ -744,8 +781,8 @@ function startScan() {
   depth.error = "";
   depthGeometry.setDrawRange(0, 0);
   depthCloud.visible = true;
-  mesh.visible = false;
-  setBackdrop(false); // the real room has to be visible to scan it
+  state.hasScene = false;
+  showRoomNow(); // the real room has to be visible to scan it
   roomWanted = true;
   $("room").checked = true;
   scan.active = true;
@@ -790,7 +827,7 @@ async function resetAll() {
   packed.numSplats = 0;
   packed.needsUpdate = true;
   mesh.updateVersion();
-  mesh.visible = false;
+  state.hasScene = false;
   shownCount = 0;
   state.meta = null;
   sceneInfo = null;
@@ -799,7 +836,7 @@ async function resetAll() {
   $("pace").checked = false;
   $("auto").checked = false;
   $("steps").value = 7000;
-  setBackdrop(false);
+  showRoomNow();
   placeStage();
   render();
   await Promise.all([
@@ -1025,7 +1062,7 @@ function drawBoard(r) {
   g.font = "28px system-ui, sans-serif";
   const hint = scan.note ? scan.note
     : r.copying ? `replay arriving: ${r.copying}`
-    : inRoom() ? "trigger: new scan   ·   B/Y: real room on/off   ·   A/X: table top   ·   stick: reset"
+    : inRoom() ? "trigger: new scan   ·   B/Y: real room / reconstruction   ·   A/X: table top   ·   stick: reset"
     : "trigger: scan   ·   grip: move   ·   both grips: resize   ·   stick: reset";
   g.fillText(hint, 44, 348);
   boardTexture.needsUpdate = true;
@@ -1053,8 +1090,8 @@ const xr = new SparkXr({
     board.visible = true;
     controls.enabled = false;
     setTimeout(() => {
-      // Entering AR with a room-scale scene already loaded: show it on black.
-      solidBackground = inRoom() && mesh.visible && packed.numSplats > 0;
+      // Entering AR with a room-scale scene already loaded: show it, not the room.
+      showReconstruction(state.hasScene);
       placeStage();
     }, 300); // once the session is presenting
     autoOpenCameras();
@@ -1134,7 +1171,7 @@ $("room").addEventListener("change", () => setRoom($("room").checked));
 
 const BUTTONS = {
   4: () => setRoom(!roomWanted), // A / X
-  5: () => setBackdrop(!solidBackground), // B / Y
+  5: () => { if (inRoom() && state.hasScene) showReconstruction(view.target === 0); }, // B / Y
   3: resetAll, // thumbstick press
 };
 
@@ -1154,7 +1191,12 @@ function pollButtons() {
 
 const VERTICAL = new THREE.Vector3(0, 1, 0);
 
+let lastFrameAt = performance.now();
+
 renderer.setAnimationLoop((time, frame) => {
+  const frameAt = performance.now();
+  applyView(Math.min(0.1, (frameAt - lastFrameAt) / 1000));
+  lastFrameAt = frameAt;
   if (renderer.xr.isPresenting) {
     pollButtons();
     recordPose(time, frame);
