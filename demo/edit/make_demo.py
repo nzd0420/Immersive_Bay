@@ -7,8 +7,8 @@ Reads the source clips with ffmpeg, lays every frame out at 1080x1920, adds the 
 sprites made by make_text.py, and writes H.264. Landscape footage (the headset recording)
 is shown as a 3:4 cut-out over a blurred copy of itself; the captions sit above and below.
 
-rec_*.mp4 are stretches of the headset recording: scan from 2:36.5 (the scan itself starts
-one second in), live from 3:18, compare from 6:08. The music comes from make_music.py.
+rec_*.mp4 are stretches of the headset recording: scan from 2:36.5, later from 4:54.8 and
+compare from 6:11.8 (each starting one second early), live from 3:18. The music comes from make_music.py.
 """
 import argparse
 import math
@@ -27,31 +27,26 @@ LEARN = "learning-smooth.mp4"
 # Every cut falls on a bar line of the music (120 beats a minute: a bar is two seconds),
 # except the fade through black at 3 s.
 SEGMENTS = [
-    ("team", TEAM, 0.8, 3.6, 3.0, "portrait"),
-    ("push", PUSH, 3.0, 6.0, 3.0, "portrait"),
+    ("open", TEAM, 0.0, 0.0, 6.0, "portrait"),       # cut by opening(): the phone clip into the fly-in
     ("scan", "rec_scan.mp4", 1.0, 8.0, 4.0, "landscape"),
-    ("live", "rec_live.mp4", 0.0, 8.0, 4.0, "landscape"),
+    ("live", "rec_live.mp4", 0.0, 8.0, 4.0, "canvas"),   # laid out by training(): two stages, one above the other
     ("compare", "rec_compare.mp4", 1.0, 8.4, 6.0, "landscape"),
-    ("outdoor", LEARN, 0.0, 6.5, 6.0, "portrait"),
+    ("outdoor", LEARN, 0.0, 6.5, 6.0, "portrait"),   # cut by outdoor(), around the third-person shot
     ("end", PUSH, 10.0, 5.0, 3.5, "portrait"),
 ]
-LEFT, LABEL, HEAD, LINE, TAG = 64, 92, 176, 1766, 1846
+LEFT, LABEL, HEAD = 64, 92, 176
 # sprite, left edge, centre y, the stretch it belongs to, from and to in seconds after the
 # stretch starts (no end: until the stretch ends). The headline of the compare stretch is
 # not here: it follows the switches found in the footage.
 CAPTIONS = [
-    ("a_label", LEFT, LABEL, "team", 0.2, 2.8), ("title", 58, 232, "team", 0.3, 2.8), ("a_line", LEFT, LINE, "team", 0.8, 2.8),
-    ("b_label", LEFT, LABEL, "push", 0.2, None), ("b_head", 60, HEAD, "push", 0.3, None), ("b_line", LEFT, LINE, "push", 0.7, None),
+    ("a_label", LEFT, LABEL, "open", 0.2, 2.7), ("title", 58, 232, "open", 0.3, 2.7),
+    ("b_label", LEFT, LABEL, "open", 3.3, None), ("b_head", 60, HEAD, "open", 3.4, None),
     ("c1_label", LEFT, LABEL, "scan", 0.05, None), ("c1_head", 60, HEAD, "scan", 0.15, None),
-    ("c1_line", LEFT, LINE, "scan", 0.5, 2.1), ("c2_line", LEFT, LINE, "scan", 2.25, None), ("x2", LEFT, TAG, "scan", 0.1, None),
-    ("d_label", LEFT, LABEL, "live", 0.05, None), ("d_head", 60, HEAD, "live", 0.15, None),
-    ("d_line", LEFT, LINE, "live", 0.9, None), ("x2", LEFT, TAG, "live", 0.1, None), ("live", 900, LABEL, "live", 0.9, None),
-    ("f_label", LEFT, LABEL, "compare", 0.05, None), ("f_line", LEFT, LINE, "compare", 0.4, None),
-    ("x14", LEFT, TAG, "compare", 0.1, None),
+    ("d_label", LEFT, 915, "live", 0.05, None), ("d_head", 60, 1000, "live", 0.15, None), ("live", 900, 915, "live", 0.9, None),
+    ("f_label", LEFT, LABEL, "compare", 0.05, None),
     ("e_label", LEFT, LABEL, "outdoor", 0.05, None), ("e_head", 60, HEAD, "outdoor", 0.15, None),
-    ("e_line", LEFT, LINE, "outdoor", 0.6, None), ("e_tag", LEFT, TAG, "outdoor", 0.6, None),
-    ("title_end", 58, 620, "end", 0.2, None), ("g_1", LEFT, 820, "end", 0.5, None), ("g_2", LEFT, 905, "end", 0.75, None),
-    ("g_3", LEFT, 990, "end", 1.0, None), ("g_4", LEFT, 1075, "end", 1.25, None), ("g_foot", LEFT, LINE, "end", 1.5, None),
+    ("g_name", 58, 640, "end", 0.2, None), ("g_people", LEFT, 800, "end", 0.55, None),
+    ("g_claim1", LEFT, 930, "end", 0.9, None), ("g_claim2", LEFT, 990, "end", 0.9, None),
 ]
 
 
@@ -162,6 +157,93 @@ def compare(path: Path, start: float, length: float, count: int):
     return out, shown
 
 
+def training(src: Path, count: int) -> list:
+    """Two moments of the same training run, one above the other, with room for the caption
+    between them. Below, its first seconds: the real room goes dark and points appear and
+    gather into the room (3:18 to 3:26 of the recording). Above, about a minute and a half
+    later, near step 9,000: looking around inside the reconstruction (4:55.8 to 5:03.8).
+    Both at twice the speed."""
+    early = list(reader(src / "rec_live.mp4", 0.0, 8.0, 2.0))
+    later = list(reader(src / "rec_later.mp4", 1.0, 8.0, 2.0))
+    tall = round(W * 9 / 16)
+    edge = 110
+    out = []
+    for k in range(count):
+        canvas = np.zeros((H, W, 3), np.uint8)
+        canvas[edge:edge + tall] = cv2.resize(later[min(k, len(later) - 1)], (W, tall), interpolation=cv2.INTER_AREA)
+        canvas[H - edge - tall:H - edge] = cv2.resize(early[min(k, len(early) - 1)], (W, tall), interpolation=cv2.INTER_AREA)
+        out.append(canvas)
+    return out
+
+
+def opening(src: Path, count: int) -> list:
+    """The phone clip of the headset going on, dissolving into the fly-in to the scanned
+    corner: the two overlap for half a second around the three-second mark."""
+    half = 8
+    first = list(reader(src / TEAM, 0.8, 4.4, 1.2))
+    second = list(reader(src / PUSH, 2.5, 6.5, 2.0, (W, H)))
+    turn = count // 2
+    out = []
+    for k in range(count):
+        a = portrait(first[min(k, len(first) - 1)])
+        a = zoom(a, 1 + 0.04 * k / turn)
+        if k < turn - half:
+            out.append(a)
+            continue
+        b = second[min(max(0, k - (turn - half)), len(second) - 1)]
+        if k >= turn + half:
+            out.append(b)
+        else:
+            weight = (k - (turn - half) + 1) / (2 * half + 1)
+            out.append(cv2.addWeighted(a, 1 - weight, b, weight, 0))
+    return out
+
+
+def outdoor(src: Path, count: int):
+    """The outdoor scene forming, the person who is scanning it, the scene finished.
+
+    The middle is 21.7 to 24.1 s of our rough cut exactly as it is there, with its own
+    dissolves from the render to the third-person shot and back (third_person.mp4 holds
+    21.0-24.6 s of it; the picture is the middle 484x858 of a wider frame, at 24 frames a
+    second, so every fourth frame shows twice). Before and after it comes the render
+    itself, at full resolution, joined where the pictures match: the frames of the render
+    that the rough cut starts from and arrives at are found by comparing them.
+    Returns the frames and, for each, the frame of the render it shows (or None)."""
+    render = list(reader(src / LEARN, 0.0, 6.5, 1.0, (W, H)))
+    raw = imageio_ffmpeg.read_frames(
+        str(src / "third_person.mp4"), pix_fmt="rgb24", input_params=["-ss", "0.70", "-t", "2.40"],
+        output_params=["-vf", f"crop=484:858:782:0,scale={W}:{H}:flags=lanczos,fps={FPS}", "-an"])
+    next(raw)
+    theirs = [np.frombuffer(data, np.uint8).reshape(H, W, 3) for data in raw]
+    tiny = lambda f: cv2.resize(f, (54, 96), interpolation=cv2.INTER_AREA).astype(np.float32)
+    small = np.stack([tiny(f) for f in render])
+    differs = lambda f: np.abs(small - tiny(f)).mean((1, 2, 3))
+    leave, arrive = differs(theirs[0]), differs(theirs[-1])
+    a = int(leave.argmin())
+    b = a + 1 + int(arrive[a + 1:].argmin())
+    print(f"rough cut: {len(theirs)} frames; it leaves the render at frame {a} (difference {leave[a]:.1f}) "
+          f"and comes back at frame {b} (difference {arrive[b]:.1f})", flush=True)
+    before = (count - len(theirs)) * 48 // 108          # a little under half of what is left
+    after = count - len(theirs) - before
+    out, shows = [], []
+    for k in range(before):
+        i = round(k * a / max(1, before - 1))
+        out.append(render[i]); shows.append(i)
+    for j, frame in enumerate(theirs):
+        out.append(frame); shows.append(None)
+    for k in range(after):
+        i = round(b + k * (len(render) - 1 - b) / max(1, after - 1))
+        out.append(render[i]); shows.append(i)
+    # Where the two meet the picture is the same, only softer in the rough cut: blend
+    # across three frames so the change in sharpness does not show as a step.
+    for j, weight in enumerate((0.25, 0.5, 0.75)):
+        k = before - 3 + j
+        out[k] = cv2.addWeighted(out[k], 1 - weight, theirs[0], weight, 0)
+        k = before + len(theirs) + j
+        out[k] = cv2.addWeighted(theirs[-1], 1 - weight, out[k], weight, 0)
+    return out, shows
+
+
 def portrait(frame: np.ndarray) -> np.ndarray:
     """Fill the frame, cutting off what does not fit."""
     h, w = frame.shape[:2]
@@ -210,6 +292,13 @@ def paste(canvas: np.ndarray, sprite: np.ndarray, left: float, cy: float, alpha:
     canvas[b:d, a:c] = (region * (1 - weight) + part[..., :3] * weight).astype(np.uint8)
 
 
+def stamp(canvas: np.ndarray, sprite: np.ndarray, cx: float, cy: float, alpha: float = 1.0, scale: float = 1.0):
+    """Blend an RGBA sprite onto the frame, centred on (cx, cy), at a size."""
+    if abs(scale - 1) > 1e-3:
+        sprite = cv2.resize(sprite, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    paste(canvas, sprite, cx - sprite.shape[1] / 2, cy, alpha)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--src", required=True)
@@ -219,6 +308,8 @@ def main():
     src, text = Path(args.src), Path(args.text)
     sprites = {p.stem: cv2.cvtColor(cv2.imread(str(p), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
                for p in text.glob("*.png")}
+    # The step counter's sprites, one for each frame of the outdoor render.
+    counters = {int(name.split("_")[1]): sprites[name] for name in sprites if name.startswith("step_")}
     # Darker towards the top and bottom edges, so the captions read on any footage.
     ys = np.arange(H, dtype=np.float32)
     shade = 1 - 0.62 * np.clip(1 - ys / 420, 0, 1) ** 1.6 - 0.62 * np.clip((ys - 1540) / 380, 0, 1) ** 1.6
@@ -237,8 +328,15 @@ def main():
                 for sprite, left, cy, seg, t0, t1 in CAPTIONS]
     for name, file, start, length, shown, layout in SEGMENTS:
         count = round(shown * FPS)
-        on_screen = None
-        if name == "compare":
+        on_screen = render_frame = None
+        if name == "open":
+            source = iter(opening(src, count))
+        elif name == "live":
+            source = iter(training(src, count))
+        elif name == "outdoor":
+            pictures, render_frame = outdoor(src, count)
+            source = iter(pictures)
+        elif name == "compare":
             pictures, on_screen = compare(src / file, start, length, count)
             source = iter(pictures)
         else:
@@ -249,19 +347,13 @@ def main():
             if raw is None:
                 raw = last
             last = raw
-            frame = (portrait(raw) if layout == "portrait" else landscape(raw)).copy()
+            frame = (raw if layout == "canvas" else portrait(raw) if layout == "portrait" else landscape(raw)).copy()
             t = n / FPS
             # Every cut settles from a slight enlargement; the opening and the ending fade.
-            if name not in ("push", "end") and k < 10:
+            if name not in ("open", "end") and k < 10:
                 frame = zoom(frame, 1 + 0.035 * (1 - k / 10) ** 2)
-            if name == "team":
-                frame = zoom(frame, 1 + 0.04 * k / count)
-                if k < 6:
-                    frame = (frame * ((k + 1) / 7)).astype(np.uint8)
-                if k >= count - 9:
-                    frame = (frame * ((count - 1 - k) / 9) ** 1.5).astype(np.uint8)
-            if name == "push" and k < 7:
-                frame = (frame * ((k + 1) / 8)).astype(np.uint8)
+            if name == "open" and k < 6:
+                frame = (frame * ((k + 1) / 7)).astype(np.uint8)
             if name == "end":
                 frame = cv2.GaussianBlur(frame, (0, 0), 6)
                 frame = (frame * 0.34).astype(np.uint8)
@@ -271,23 +363,34 @@ def main():
                     frame = (frame * ((count - 1 - k) / 15)).astype(np.uint8)
             if layout == "portrait" and name != "end":
                 frame = (frame * shade).astype(np.uint8)
-            if name == "outdoor":
-                # The training step this frame shows (the sprites carry the numbers), with a
-                # thin bar that fills as the run goes on.
-                step = round(15000 * min(k * (length / shown) / 132, 1.0) ** 2.4)
-                appear = min(1.0, (k + 1) / 8)
-                paste(frame, sprites[f"step_{k:03d}"], LEFT - 12, 276, appear)
+            if name == "outdoor" and render_frame[k] is not None:
+                # The training step this frame of the render shows, with a thin bar that fills
+                # as the run goes on. Both are hidden while the rough cut's footage plays.
+                near = min(k + 1, 8, *(abs(k - j) for j in range(count) if render_frame[j] is None))
+                appear = min(1.0, near / 8)
+                paste(frame, counters[render_frame[k]], LEFT - 12, 276, appear)
+                step = 15000 * min(render_frame[k] / 132, 1.0) ** 2.4
                 y = 318
                 bar = frame[y:y + 3, LEFT:LEFT + 560].astype(np.float32)
                 bar = bar * (1 - 0.3 * appear) + 255 * 0.3 * appear
                 filled = round(560 * step / 15000)
-                bar[:, :filled] = bar[:, :filled] * (1 - appear) + np.array([124, 249, 201]) * appear
+                bar[:, :filled] = bar[:, :filled] * (1 - appear) + 255 * appear
                 frame[y:y + 3, LEFT:LEFT + 560] = bar.astype(np.uint8)
             if on_screen:
                 # The headline says what is on screen and changes with every switch.
                 since = next((j for j in range(1, k + 1) if on_screen[k - j] != on_screen[k]), k) / FPS
                 paste(frame, sprites["f_real" if on_screen[k] == "real" else "f_splat"], 60, HEAD,
                       min(1.0, (since + 1 / FPS) / 0.1) * min(1.0, (count - k) / 4))
+                # The controller's B button under the picture: it goes grey and dips each time
+                # it is pressed, a moment before the view passes over.
+                held = 0.0
+                for j in range(1, count):
+                    if on_screen[j] != on_screen[j - 1]:
+                        d = k - j
+                        held = max(held, 1.0 if -7 <= d <= -2 else (d + 9) / 2 if -9 < d < -7 else 1 - (d + 2) / 5 if -2 < d < 3 else 0.0)
+                appear = min(1.0, (k + 1) / 8) * min(1.0, (count - k) / 5)
+                stamp(frame, sprites["b_up"], W / 2, 1790, appear * (1 - held), 1 - 0.07 * held)
+                stamp(frame, sprites["b_down"], W / 2, 1790, appear * held, 1 - 0.07 * held)
             for sprite, left, cy, t0, t1 in captions:
                 if t0 <= t < t1:
                     age, remaining = t - t0, t1 - t
