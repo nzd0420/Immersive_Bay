@@ -16,12 +16,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from webxr_scan import CAPTURES, build_workspace  # noqa: E402
-
 import os
 
-HOST, REMOTE = "autodl_3080TI", "/root/autodl-tmp/immersive_bay/scenes"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from webxr_scan import CAPTURES, build_workspace, settings  # noqa: E402
+
+HOST, REMOTE = settings()["GPU_HOST"], settings()["GPU_DIR"] + "/scenes"
 # Point this at a second server instance, so calibration runs do not take the training
 # server away from whoever is using the viewer.
 API = os.environ.get("CAL_API", "http://127.0.0.1:8766")
@@ -34,6 +34,8 @@ def call(path, body=None):
 
 
 def main():
+    if not HOST:
+        sys.exit("No GPU machine set: put GPU_HOST in scripts/local.env")
     scan_id = sys.argv[1]
     offsets = [float(v) for v in sys.argv[2].split(",")] if len(sys.argv) > 2 else [-20, 10, 40, 70, 100, 130]
     steps = int(sys.argv[3]) if len(sys.argv) > 3 else 1200

@@ -1,8 +1,18 @@
-recordings/
+# Your own machine names and paths (copy local.env.example)
+scripts/local.env
+
+# Data made while running: scans, recorded runs, logs
 captures/
-.claude/
+recordings/
+logs/
+
+# Demo video material: clips, renders and finished cuts are large and stay local
+demo/footage/
+demo/renders/
+demo/out/
+*.mp4
+*.wav
+
 __pycache__/
 .DS_Store
-logs/
-renders/
-videos/
+.claude/

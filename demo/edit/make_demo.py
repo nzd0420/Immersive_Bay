@@ -7,8 +7,8 @@ Reads the source clips with ffmpeg, lays every frame out at 1080x1920, adds the 
 sprites made by make_text.py, and writes H.264. Landscape footage (the headset recording)
 is shown as a 3:4 cut-out over a blurred copy of itself; the captions sit above and below.
 
-rec_*.mp4 are stretches of the headset recording: scan from 2:38.5, upload from 2:56 and
-live from 3:18 (each starting one second early), compare from 6:08.
+rec_*.mp4 are stretches of the headset recording: scan from 2:36.5 (the scan itself starts
+one second in), live from 3:18, compare from 6:08. The music comes from make_music.py.
 """
 import argparse
 import math
@@ -23,36 +23,39 @@ TEAM = "945ddc20d1da3aec4872cc00674fe91a.mp4"
 PUSH = "scan-195510-orbit-pushin-portrait-15s.mp4"
 LEARN = "learning-smooth.mp4"
 
-# name, file, start in the source (s), length taken (s), length in the video (s), layout
+# name, file, start in the source (s), length taken (s), length in the video (s), layout.
+# Every cut falls on a bar line of the music (120 beats a minute: a bar is two seconds),
+# except the fade through black at 3 s.
 SEGMENTS = [
     ("team", TEAM, 0.8, 3.6, 3.0, "portrait"),
-    ("push", PUSH, 3.0, 6.0, 2.5, "portrait"),
-    ("scan", "rec_scan.mp4", 1.0, 6.0, 3.0, "landscape"),
-    ("upload", "rec_upload.mp4", 1.0, 3.0, 1.5, "landscape"),
-    ("live", "rec_live.mp4", 1.0, 7.5, 3.8, "landscape"),
+    ("push", PUSH, 3.0, 6.0, 3.0, "portrait"),
+    ("scan", "rec_scan.mp4", 1.0, 8.0, 4.0, "landscape"),
+    ("live", "rec_live.mp4", 0.0, 8.0, 4.0, "landscape"),
     ("outdoor", LEARN, 0.0, 6.5, 6.0, "portrait"),
-    ("compare", "rec_compare.mp4", 0.0, 8.0, 6.2, "landscape"),
-    ("end", PUSH, 10.0, 5.0, 3.6, "portrait"),
+    ("compare", "rec_compare.mp4", 0.0, 8.0, 6.0, "landscape"),
+    ("end", PUSH, 10.0, 5.0, 3.5, "portrait"),
 ]
 LEFT, LABEL, HEAD, LINE, TAG = 64, 92, 176, 1766, 1846
-REAL, FADE = 3.0, 0.6  # in the compare stretch: seconds of reality, then of passing through black
+# The compare stretch, in frames of the video: reality, the pass through black, the
+# reconstruction, the dissolve back, reality again.
+TO_SPLAT, TO_REAL = (66, 84), (138, 150)
+SPLAT_AT, REAL_AT = sum(TO_SPLAT) / 2 / FPS, sum(TO_REAL) / 2 / FPS
 # sprite, left edge, centre y, the stretch it belongs to, from and to in seconds after the
 # stretch starts (no end: until the stretch ends)
 CAPTIONS = [
     ("a_label", LEFT, LABEL, "team", 0.2, 2.8), ("title", 58, 232, "team", 0.3, 2.8), ("a_line", LEFT, LINE, "team", 0.8, 2.8),
     ("b_label", LEFT, LABEL, "push", 0.2, None), ("b_head", 60, HEAD, "push", 0.3, None), ("b_line", LEFT, LINE, "push", 0.7, None),
     ("c1_label", LEFT, LABEL, "scan", 0.05, None), ("c1_head", 60, HEAD, "scan", 0.15, None),
-    ("c1_line", LEFT, LINE, "scan", 0.5, None), ("x2", LEFT, TAG, "scan", 0.1, None),
-    ("c2_label", LEFT, LABEL, "upload", 0.05, None), ("c2_head", 60, HEAD, "upload", 0.1, None),
-    ("c2_line", LEFT, LINE, "upload", 0.2, None), ("x2", LEFT, TAG, "upload", 0.0, None),
+    ("c1_line", LEFT, LINE, "scan", 0.5, 2.1), ("c2_line", LEFT, LINE, "scan", 2.25, None), ("x2", LEFT, TAG, "scan", 0.1, None),
     ("d_label", LEFT, LABEL, "live", 0.05, None), ("d_head", 60, HEAD, "live", 0.15, None),
-    ("d_line", LEFT, LINE, "live", 0.5, None), ("x2", LEFT, TAG, "live", 0.1, None), ("live", 900, LABEL, "live", 0.3, None),
+    ("d_line", LEFT, LINE, "live", 0.9, None), ("x2", LEFT, TAG, "live", 0.1, None), ("live", 900, LABEL, "live", 0.9, None),
     ("e_label", LEFT, LABEL, "outdoor", 0.05, None), ("e_head", 60, HEAD, "outdoor", 0.15, None),
     ("e_line", LEFT, LINE, "outdoor", 0.6, None), ("e_tag", LEFT, TAG, "outdoor", 0.6, None),
-    ("f_label", LEFT, LABEL, "compare", 0.05, None), ("f_real", 60, HEAD, "compare", 0.2, REAL + FADE / 2 - 0.1),
-    ("f_splat", 60, HEAD, "compare", REAL + FADE / 2 + 0.15, None), ("f_line", LEFT, LINE, "compare", 0.6, None),
+    ("f_label", LEFT, LABEL, "compare", 0.05, None), ("f_real", 60, HEAD, "compare", 0.2, SPLAT_AT - 0.1),
+    ("f_splat", 60, HEAD, "compare", SPLAT_AT + 0.15, REAL_AT - 0.1), ("f_real", 60, HEAD, "compare", REAL_AT + 0.1, None),
+    ("f_line", LEFT, LINE, "compare", 0.6, None),
     ("title_end", 58, 620, "end", 0.2, None), ("g_1", LEFT, 820, "end", 0.5, None), ("g_2", LEFT, 905, "end", 0.75, None),
-    ("g_3", LEFT, 990, "end", 1.0, None), ("g_4", LEFT, 1075, "end", 1.25, None), ("g_foot", LEFT, LINE, "end", 1.6, None),
+    ("g_3", LEFT, 990, "end", 1.0, None), ("g_4", LEFT, 1075, "end", 1.25, None), ("g_foot", LEFT, LINE, "end", 1.5, None),
 ]
 
 
@@ -130,19 +133,24 @@ def between(a: np.ndarray, b: np.ndarray, part: float, flow_of: dict, key: int) 
 
 
 def compare(path: Path, count: int) -> list:
-    """One switch out of the recording, steadied: three seconds of reality at the speed it
-    was recorded, the pass through black, then the reconstruction of the same view. In the
-    recording the reconstruction is on screen for only 1.6 s before the next switch, so
-    that part is slowed to about 0.4x, with the frames in between made by optical flow."""
-    frames = steady(list(reader(path, 0.0, 8.0, 1.0)))
+    """Two switches out of the recording while the head keeps turning: reality, through
+    black to the reconstruction, and a dissolve back to reality (6:10.4 to 6:15.5).
+
+    Only lightly steadied, so the turning stays. Reality plays at the speed it was
+    recorded. The recording stays on the reconstruction for 1.1 s and on the second
+    reality for half a second before the next switch, so those are slowed to about 0.6x
+    and 0.5x, with the frames in between made by optical flow."""
+    frames = steady(list(reader(path, 0.0, 8.0, 1.0)), sigma=12.0, enlarge=1.06)
     light = np.array([f[:700:8, ::8].mean() for f in frames])
-    dark = 120 + int(light[120:190].argmin())  # the switch: the only moment that goes fully black
-    real, fade = round(REAL * FPS), round(FADE * FPS)
-    last = dark + fade // 2 + 34  # the next switch begins about 1.6 s after this one
-    at = np.interp(np.arange(count), [0, real, real + fade, count - 1],
-                   [dark - fade // 2 - real, dark - fade // 2, dark + fade // 2, last])
-    print(f"switch at frame {dark} of the stretch ({int((368 + dark / 30) // 60)}:{(368 + dark / 30) % 60:05.2f} of the recording); "
-          f"brightness before {light[dark - 60]:.0f}, at {light[dark]:.0f}, after {light[dark + 20]:.0f}", flush=True)
+    dark = 120 + int(light[120:190].argmin())             # real -> splat: goes fully black
+    back = dark + 35 + int(light[dark + 35:dark + 65].argmin())  # splat -> real: only dims
+    half_a, half_b = (TO_SPLAT[1] - TO_SPLAT[0]) // 2, (TO_REAL[1] - TO_REAL[0]) // 2
+    at = np.interp(np.arange(count), [0, TO_SPLAT[0], TO_SPLAT[1], TO_REAL[0], TO_REAL[1], count - 1],
+                   [dark - half_a - TO_SPLAT[0], dark - half_a, dark + half_a, back - half_b, back + half_b,
+                    min(len(frames) - 1, back + half_b + 14)])
+    stamp = lambda i: f"{int((368 + i / 30) // 60)}:{(368 + i / 30) % 60:05.2f}"
+    print(f"to the reconstruction at {stamp(dark)} (brightness {light[dark]:.0f}), back to reality at {stamp(back)} "
+          f"(brightness {light[back]:.0f}, around it {light[back - 12]:.0f} and {light[back + 12]:.0f})", flush=True)
     out, flow_of = [], {}
     for position in at:
         low = min(int(position), len(frames) - 2)
@@ -254,8 +262,8 @@ def main():
                 frame = (frame * 0.34).astype(np.uint8)
                 if k < 8:
                     frame = (frame * ((k + 1) / 9)).astype(np.uint8)
-                if k >= count - 10:
-                    frame = (frame * ((count - 1 - k) / 10)).astype(np.uint8)
+                if k >= count - 15:
+                    frame = (frame * ((count - 1 - k) / 15)).astype(np.uint8)
             if layout == "portrait" and name != "end":
                 frame = (frame * shade).astype(np.uint8)
             if name == "outdoor":

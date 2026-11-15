@@ -6,7 +6,8 @@
 The input is one frame exactly as the live server streams it (16 bytes per Gaussian, the
 layout written by `pack_frame` in live_server.py), saved together with the scene's
 description. So the video shows the very model that was on screen: nothing is trained
-again. scripts/render_orbit.sh fetches both from the running server and runs this.
+again. render_orbit.sh fetches both from the running server and runs this on the GPU
+machine.
 
 The camera circles the scene's centre about the scene's up direction, at a distance and
 an elevation, and keeps the horizon level. The centre is the middle of the box around the

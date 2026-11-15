@@ -5,7 +5,7 @@ Replay files are copied from the training server into recordings/ in the backgro
 (paused while a run is training, so the live stream keeps the link), and played back from
 this Mac. Replays therefore need no connection to the training server.
 
-    scripts/tunnel.sh              # Mac:8765 -> GPU machine
+    scripts/tunnel.sh              # this computer :8765 -> GPU machine
     python3 scripts/dev_proxy.py   # http://localhost:8090
 
 The headset reaches it at http://localhost:8090 after `adb reverse tcp:8090 tcp:8090`;
@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 import re
 
-from webxr_scan import Scans, photo_poses
+from webxr_scan import Scans, photo_poses, settings
 
 ROOT = (Path(__file__).resolve().parent.parent / "viewer").resolve()
 RECORDINGS = (Path(__file__).resolve().parent.parent / "recordings").resolve()
@@ -282,9 +282,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8090)))
     parser.add_argument("--upstream", default="127.0.0.1:8765")
-    parser.add_argument("--ssh-host", default=os.environ.get("HOST", "autodl_pro6000"),
-                        help="GPU machine, for uploading scans made in the viewer")
-    parser.add_argument("--remote-dir", default="/root/autodl-tmp/immersive_bay")
+    gpu = settings()
+    parser.add_argument("--ssh-host", default=gpu["GPU_HOST"],
+                        help="SSH alias of the GPU machine, for uploading scans made in the "
+                             "viewer (default: GPU_HOST in scripts/local.env)")
+    parser.add_argument("--remote-dir", default=gpu["GPU_DIR"],
+                        help="the project folder on the GPU machine (default: GPU_DIR)")
     args = parser.parse_args()
     upstream_host, upstream_port = args.upstream.rsplit(":", 1)
     fetcher = Fetcher(upstream_host, int(upstream_port))

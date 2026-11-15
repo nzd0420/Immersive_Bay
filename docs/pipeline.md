@@ -1,65 +1,108 @@
-# 技术 pipeline
+# Technical pipeline
 
-数字来自仓库代码和 README 的 "Measured" 一节。
+English | [简体中文](pipeline.zh-CN.md)
 
-## 总体结构
+How a scan becomes a reconstruction that forms around the person who made it. The numbers
+come from the code and from the "Measured" section of the README.
 
+## Overview
+
+```text
+Quest 3S browser (one WebXR page)
+   │  1. JPEG photos + head poses            ▲ 4. Gaussian frames (difference, deflated)
+   ▼  HTTPS (public tunnel, or USB)          │
+Computer in between (scripts/dev_proxy.py: web server, conversion, forwarding)
+   │  2. rsync over SSH                      ▲ 3. HTTP stream, through an SSH port forward
+   ▼                                         │
+GPU machine (server/live_server.py: gsplat training)
 ```
-Quest 3S 浏览器(一个 WebXR 网页)
-   │  ① 照片 JPEG + 头部位姿          ▲ ④ 高斯帧(差分+压缩)
-   ▼  HTTPS(cloudflared 隧道或 USB)   │
-Mac(dev_proxy.py:网页服务器 + 转换 + 转发)
-   │  ② rsync over SSH                 ▲ ③ HTTP 流,经 SSH 端口转发
-   ▼                                   │
-GPU 服务器(live_server.py,RTX 3080 Ti,gsplat 训练)
-```
 
-三台机器各做一件事:头显只采集和显示,Mac 做格式转换和中转,服务器只训练。
+Each machine does one thing. The headset captures and displays, the computer in between
+converts and relays, the GPU machine trains.
 
-## 1. 头显上采集
+## 1. Capturing on the headset
 
-- **照片**:AR 会话期间,网页用 `getUserMedia` 打开左右两个透视相机(1728×1728,30 帧/秒)。每个相机每 450 毫秒取一帧,缩到 1024×1024,压成 JPEG(质量 0.88),上限 240 张。
-- **位姿**:每个 XR 帧记录一次头部位姿(约 90 次/秒),时间戳用 `frame.predictedDisplayTime`。
-- **筛选**:头转得太快(超过 50°/秒)或 150 毫秒内没有位姿时不拍,避免模糊和无法定位的照片。
-- **上传时机**:照片边拍边传(`POST /scan/frame`),位姿在结束扫描时一次性传(`POST /scan/finish`)。
+- **Photos.** During the AR session the page opens both passthrough cameras with
+  `getUserMedia` (1728×1728, 30 frames per second). From each camera it takes a frame
+  every 450 ms, scales it to 1024×1024 and encodes it as JPEG (quality 0.88), up to 240
+  photos per scan.
+- **Poses.** On every XR frame, about 90 times a second, the page records the head pose,
+  stamped with `frame.predictedDisplayTime`.
+- **Filtering.** No photo is taken while the head turns faster than 50° per second, or
+  when there has been no pose for 150 ms. That avoids blurred photos and photos that
+  cannot be placed.
+- **Upload.** Photos are sent as they are taken (`POST /scan/frame`); the pose history is
+  sent once, when the scan ends (`POST /scan/finish`).
 
-## 2. Mac 作为中介
+## 2. The computer in between
 
-Mac 上跑一个 `scripts/dev_proxy.py`,同时承担四个角色。
+`scripts/dev_proxy.py` plays four parts.
 
-- **网页服务器**:WebXR 和相机都要求安全来源。头显通过 cloudflared 的 HTTPS 隧道(无线)或 `adb reverse`(USB,等同 localhost)访问 Mac 的 8090 端口。
-- **接收扫描**:照片存到 `captures/<scan>/`,每张记一行元数据(哪个相机、序号、时间戳)。
-- **转换成训练数据**,这是省掉 COLMAP 的关键:
-  - 对每张照片,把头部位姿插值到"照片时间戳 − 15 毫秒"(位置线性、旋转球面插值)。15 毫秒是实测校准的相机延迟。
-  - 乘上该相机相对头部的安装位置和朝向,得到相机位姿;内参按 1024 分辨率缩放。这些标定数据是从头显 `dumpsys media.camera` 里读出来的。
-  - 坐标系从 WebXR(y 朝上、z 朝后)转成 COLMAP(y 朝下、z 朝前)。
-  - 直接写出 COLMAP 格式的工作目录,不跑特征匹配和 SfM。初始点云沿相机视线随机撒点。
-- **通往服务器的唯一通道**:GPU 服务器没有公网端口,只有 Mac 有 SSH。Mac 用 `rsync` 把工作目录传到服务器的 scenes 目录,再通过 SSH 端口转发(Mac 8765 → 服务器 8765)调用 `/api/start` 开始训练。之后头显的所有 `/api/*` 请求都由 Mac 转发。
+- **Web server.** WebXR and the cameras both require a secure origin. The headset reaches
+  port 8090 either through an HTTPS tunnel (wireless) or through `adb reverse` (USB, which
+  makes it `localhost`).
+- **Receiving a scan.** Photos go to `captures/<scan>/`, each with a line of metadata:
+  which camera, its number, its timestamp.
+- **Building the training scene.** This is what replaces COLMAP.
+  - For each photo, the head pose is interpolated to the photo's timestamp minus 15 ms
+    (position linearly, rotation spherically). The 15 ms is the camera's delay, measured
+    with `scripts/calibrate_scan.py`.
+  - Applying that camera's position and orientation relative to the head gives the camera
+    pose; the intrinsics are scaled to 1024 pixels. This calibration is read out of the
+    headset with `adb shell dumpsys media.camera`.
+  - Coordinates go from WebXR (y up, z towards the viewer) to COLMAP (y down, z forward).
+  - The result is written directly as a COLMAP workspace. No feature matching and no
+    structure-from-motion run. The starting points are scattered at random along the
+    cameras' view rays.
+- **The only way to the GPU machine.** The GPU machine needs no public port, only SSH from
+  this computer. The workspace is copied with `rsync` into the server's scenes folder,
+  and training is started through an SSH port forward (local 8765 to the server's 8765).
+  From then on every `/api/*` request of the headset is forwarded the same way.
 
-## 3. 服务器训练
+## 3. Training
 
-- gsplat 1.5,MCMC 致密化策略,高斯数量上限 300,000(头显能渲染的量),球谐阶数 0,默认 7000 步。
-- 损失是 0.8·L1 + 0.2·SSIM,加不透明度和尺度正则。
-- 速度 50–100 步/秒,随高斯数量变化。
+- gsplat 1.5 with the MCMC densification strategy, at most 300,000 Gaussians (what the
+  headset can render), spherical harmonics of degree 0, 7000 steps by default.
+- The loss is 0.8·L1 + 0.2·SSIM, plus regularisers on opacity and scale.
+- 50 to 100 steps per second, depending on how many Gaussians there are.
 
-## 4. 回传和实时显示
+## 4. Streaming back and showing it live
 
-每 20 步发布一帧。要解决的是:一帧原始数据近 5 MB,链路只有约 1.2 MB/s。
+A frame is published every 20 steps. The problem: a raw frame is close to 5 MB, and our
+link carried about 1.2 MB/s.
 
-- **GPU 上直接打包**:把所有高斯编码成 Spark 渲染器内部用的 16 字节格式(颜色和不透明度 4 字节、中心 3 个 float16、旋转 3 字节、对数尺度 3 字节)。300,000 个高斯是 4.8 MB。头显收到后不用解析,直接写进显存。
-- **只传差分**:每帧和上一帧逐字节相减,按列重排(同类字段放一起)后用 zlib 压缩。相邻 20 步变化很小,实际大小是原始的 30–43%。
-- **按确认做流控**:头显每画完一帧就回一个确认。服务器只在"未确认的字节数"低于一个窗口时才发新帧;窗口初始 600 KB,按确认延迟自动增减 15%–20%。链路慢时效果是跳过中间帧、只发最新的,不会越积越多。
-- **头显端原地更新**:浏览器用 `DecompressionStream` 解压,加回上一帧得到当前帧,覆盖同一个 `PackedSplats` 缓冲区,再调用 `mesh.updateVersion()` 让 Spark 重新上传纹理。整个会话只有一个网格,没有创建和销毁。
+- **Packed on the GPU.** All Gaussians are encoded into the 16-byte layout the Spark
+  renderer uses internally: colour and opacity in 4 bytes, the centre as three float16,
+  the rotation in 3 bytes, the log-scales in 3 bytes. 300,000 Gaussians are 4.8 MB. The
+  headset writes a frame into GPU memory without parsing it.
+- **Only differences are sent.** Each frame is subtracted byte by byte from the previous
+  one, rearranged by column so that like fields sit together, and deflated. Twenty steps
+  change little, so a frame ends up at 30–43% of its raw size.
+- **Flow control by acknowledgement.** The headset acknowledges each frame it has drawn.
+  The server sends a new frame only while the unacknowledged bytes are below a window,
+  which starts at 600 KB and grows or shrinks by 15–20% according to how long
+  acknowledgements take. On a slow link the effect is that intermediate frames are
+  skipped and the newest is sent, instead of a backlog building up.
+- **Updated in place.** The browser inflates the frame with `DecompressionStream`, adds it
+  to the previous one, overwrites the same `PackedSplats` buffer and calls
+  `mesh.updateVersion()` so that Spark uploads the texture again. There is one mesh for
+  the whole session; nothing is created or destroyed.
 
-### 更新频率(实测)
+### Update rate, measured
 
-| 阶段 | 模型更新频率 | 瓶颈 |
+| Phase | Model updates | Limited by |
 |---|---|---|
-| 前 1000 步 | 每秒 5 次(每 20 步一帧都能送到) | 训练速度 |
-| 之后 | 每秒 1.5–2 次 | 网络(高斯变多,帧变大) |
+| First 1000 steps | 5 per second (every 20-step frame arrives) | training speed |
+| After that | 1.5–2 per second | the network (more Gaussians, larger frames) |
 
-这里有两个频率要区分:每秒 1–2 次是**模型更新**的频率;头显自己的**渲染帧率**不受影响。两次更新之间转头、走动,画面照常按头显刷新率重绘当前这一帧高斯。
+Two rates are easy to confuse here. One or two per second is how often the *model*
+changes. The headset's own rendering rate is unaffected: between two updates, turning the
+head or walking redraws the current Gaussians at the display's refresh rate.
 
-## 为什么回来的高斯在原位
+## Why the Gaussians come back in place
 
-相机位姿来自同一个 AR 会话的头部追踪,所以训练出来的场景本身就在头显的坐标系里。服务器加载时会做归一化,随帧头一起发回逆变换(`to_world`),头显套上后高斯就落在真实物体所在的位置,大小 1:1,不需要任何配准。
+The camera poses come from the head tracking of the same AR session, so the trained scene
+is in the headset's coordinate system from the start. The server normalises a scene when
+it loads it and sends the inverse transform (`to_world`) along with the scene's
+description; with that applied, the Gaussians land where the real things are, at 1:1
+scale, with no registration step.

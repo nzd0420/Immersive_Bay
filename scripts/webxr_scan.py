@@ -22,6 +22,7 @@ from __future__ import annotations
 import bisect
 import http.client
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -34,6 +35,25 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 CAPTURES = ROOT / "captures"
+
+
+def settings() -> dict:
+    """Where the GPU machine is: scripts/local.env, overridden by the environment.
+
+    GPU_HOST is its SSH alias, GPU_DIR the project folder on it (see local.env.example).
+    """
+    values = {"GPU_HOST": "", "GPU_DIR": "live-splat"}
+    path = Path(__file__).with_name("local.env")
+    if path.exists():
+        for line in path.read_text().splitlines():
+            key, separator, value = line.strip().partition("=")
+            if separator and not key.startswith("#"):
+                values[key.strip()] = value.strip().strip('"')
+    for key in values:
+        values[key] = os.environ.get(key) or values[key]
+    return values
+
+
 FLIP = np.diag([1.0, -1.0, -1.0])  # three.js <-> COLMAP, world and camera axes
 TO_UNITY = np.diag([1.0, 1.0, -1.0])  # three.js <-> Unity (left-handed, z forward)
 FLIP_Y = np.diag([1.0, -1.0, 1.0])  # Unity <-> COLMAP
@@ -350,6 +370,8 @@ class Scans:
             self._set(scan_id, "building")
             summary = build_workspace(scan_dir, out, self.calibration,
                                       float(options.get("latency_ms", self.latency_ms)))
+            if not self.ssh_host:
+                raise RuntimeError("no GPU machine set: put GPU_HOST in scripts/local.env")
             self._set(scan_id, "uploading", frames=summary["frames"])
             remote = f"{self.remote_dir}/scenes/{scan_id}"
             subprocess.run(["ssh", "-o", "BatchMode=yes", self.ssh_host, f"mkdir -p {remote}"],

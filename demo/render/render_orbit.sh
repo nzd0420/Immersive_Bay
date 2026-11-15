@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Render an orbit video of the scene the training server is showing right now.
-#   scripts/render_orbit.sh NAME [options for server/render_orbit.py]
-#   scripts/render_orbit.sh orbit --distance 12 --elevation 9 --azimuth 10 --seconds 40
-#   scripts/render_orbit.sh pushin --distance 12 --elevation 9 --azimuth 10 --seconds 40 --push-in 8
+#   demo/render/render_orbit.sh NAME [options for render_orbit.py]
+#   demo/render/render_orbit.sh orbit --distance 12 --elevation 9 --azimuth 10 --seconds 40
+#   demo/render/render_orbit.sh pushin --distance 12 --elevation 9 --azimuth 10 --seconds 40 --push-in 8
 #
-# Saves the server's current frame as renders/<scene>/final_frame.bin and .json (once: an
-# existing copy is kept and reused, so a scene can still be rendered after the server has
-# moved on), renders on the GPU machine and writes videos/<scene>-NAME.mp4.
+# Saves the server's current frame as demo/renders/<scene>/final_frame.bin and .json (once:
+# an existing copy is kept and reused, so a scene can still be rendered after the server
+# has moved on), renders on the GPU machine and writes demo/footage/<scene>-NAME.mp4.
 # Needs scripts/tunnel.sh running.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+source scripts/config.sh
+need_gpu_host
 name="$1"; shift
-host="${HOST:-autodl_pro6000}"
-remote=/root/autodl-tmp/immersive_bay
-gsplat_project=/root/autodl-tmp/Gaussian_Story
 
 scene="$(python3 - <<'PY'
 import http.client, json, os, urllib.request, zlib
@@ -21,7 +20,7 @@ status = json.load(urllib.request.urlopen("http://127.0.0.1:8765/api/status", ti
 scene = os.environ.get("SCENE") or status.get("scene", {}).get("name")
 if not scene:
     raise SystemExit("the server has no scene loaded; set SCENE=<name> to reuse a saved frame")
-folder = f"renders/{scene}"
+folder = f"demo/renders/{scene}"
 if not os.path.exists(f"{folder}/final_frame.bin"):
     if status.get("scene", {}).get("name") != scene or status["state"] not in ("done", "stopped"):
         raise SystemExit(f"{scene} is not the finished scene on the server, and no frame of it is saved")
@@ -54,20 +53,16 @@ print(scene)
 PY
 )"
 echo "scene: $scene"
-ssh -o BatchMode=yes "$host" "mkdir -p $remote/renders/$scene/orbit"
-rsync -az server/render_orbit.py "$host:$remote/server/render_orbit.py"
-rsync -az "renders/$scene/final_frame.bin" "renders/$scene/final_frame.json" "$host:$remote/renders/$scene/"
-ssh -o BatchMode=yes "$host" "bash -s" <<REMOTE
+ssh -o BatchMode=yes "$GPU_HOST" "mkdir -p $GPU_DIR/renders/$scene/orbit"
+rsync -az demo/render/render_orbit.py "$GPU_HOST:$GPU_DIR/server/render_orbit.py"
+rsync -az "demo/renders/$scene/final_frame.bin" "demo/renders/$scene/final_frame.json" "$GPU_HOST:$GPU_DIR/renders/$scene/"
+ssh -o BatchMode=yes "$GPU_HOST" "bash -s" <<REMOTE
 set -euo pipefail
-if [ -f $remote/activate.sh ]; then
-  source $remote/activate.sh >/dev/null 2>&1
-else
-  source $gsplat_project/env/nzd/autodl/activate.sh >/dev/null 2>&1
-fi
-cd $remote
+cd $GPU_DIR
+source $GPU_ACTIVATE >/dev/null 2>&1
 python server/render_orbit.py --frame renders/$scene/final_frame.bin --info renders/$scene/final_frame.json \
   --out renders/$scene/orbit/$name.mp4 $* 2>&1 | grep -v -i "warn" | tail -3
 REMOTE
-mkdir -p videos
-rsync -az --partial "$host:$remote/renders/$scene/orbit/$name.mp4" "videos/$scene-$name.mp4"
-ls -la "videos/$scene-$name.mp4"
+mkdir -p demo/footage
+rsync -az --partial "$GPU_HOST:$GPU_DIR/renders/$scene/orbit/$name.mp4" "demo/footage/$scene-$name.mp4"
+ls -la "demo/footage/$scene-$name.mp4"

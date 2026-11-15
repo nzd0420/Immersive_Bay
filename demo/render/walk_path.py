@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The camera path of a first-person video of a scan made in the viewer.
 
-    python3 scripts/walk_path.py scan-164255 > path.json
+    python3 demo/render/walk_path.py scan-164255 > path.json
 
 Follows the left passthrough camera along the head path recorded while scanning, at 30
 frames a second. Stretches in which nothing was photographed for more than 1.5 s (the
@@ -11,7 +11,7 @@ world of the scan's workspace and the photo that was the most recent one at that
 
 One camera move out of the walk, steadied, ending with a metre forward:
 
-    python3 scripts/walk_path.py scan-164255 --frames 755:1005 --steady 12 --forward 0.9
+    python3 demo/render/walk_path.py scan-164255 --frames 755:1005 --steady 12 --forward 0.9
 
 --steady is how many frames (at 30 a second) the head's bobbing and jitter is averaged
 over; --forward adds two seconds at the end that glide straight ahead, level, looking
@@ -24,7 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"  # the scan code lives there
+sys.path.insert(0, str(SCRIPTS))
 from webxr_scan import CAPTURES, FLIP, Lens, PoseHistory, quat_to_matrix, slerp  # noqa: E402
 
 
@@ -37,7 +38,7 @@ def matrix_to_quat(R: np.ndarray) -> np.ndarray:
 
 def build(scan_id: str, fps: int = 30, latency_ms: float = 15.0, gap_ms: float = 1500.0) -> dict:
     scan_dir = CAPTURES / scan_id
-    calibration = json.loads(Path(__file__).with_name("quest_cameras.json").read_text())
+    calibration = json.loads((SCRIPTS / "quest_cameras.json").read_text())
     history = PoseHistory(json.loads((scan_dir / "poses.json").read_text()))
     records = [json.loads(line) for line in (scan_dir / "frames.jsonl").read_text().splitlines() if line]
     left = sorted((r for r in records if r["side"] == "left"), key=lambda r: r["t"])

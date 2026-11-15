@@ -32,8 +32,9 @@ the live server uses, the default noise trained cleanly and gave the best finish
 Each 2160-pixel video being encoded takes about 4 GB of memory, so do not run several of
 these side by side on a small machine.
 
-`path.json` comes from scripts/walk_path.py. Needs what live_server.py needs, plus
-imageio-ffmpeg.
+`path.json` comes from walk_path.py. This imports the training code from
+server/live_server.py, so it runs next to it: render_walk.sh copies it into server/ on
+the GPU machine. Needs what live_server.py needs, plus imageio-ffmpeg.
 """
 import argparse
 import json
