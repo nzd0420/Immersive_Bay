@@ -31,17 +31,14 @@ SEGMENTS = [
     ("push", PUSH, 3.0, 6.0, 3.0, "portrait"),
     ("scan", "rec_scan.mp4", 1.0, 8.0, 4.0, "landscape"),
     ("live", "rec_live.mp4", 0.0, 8.0, 4.0, "landscape"),
+    ("compare", "rec_compare.mp4", 1.0, 8.4, 6.0, "landscape"),
     ("outdoor", LEARN, 0.0, 6.5, 6.0, "portrait"),
-    ("compare", "rec_compare.mp4", 0.0, 8.0, 6.0, "landscape"),
     ("end", PUSH, 10.0, 5.0, 3.5, "portrait"),
 ]
 LEFT, LABEL, HEAD, LINE, TAG = 64, 92, 176, 1766, 1846
-# The compare stretch, in frames of the video: reality, the pass through black, the
-# reconstruction, the dissolve back, reality again.
-TO_SPLAT, TO_REAL = (66, 84), (138, 150)
-SPLAT_AT, REAL_AT = sum(TO_SPLAT) / 2 / FPS, sum(TO_REAL) / 2 / FPS
 # sprite, left edge, centre y, the stretch it belongs to, from and to in seconds after the
-# stretch starts (no end: until the stretch ends)
+# stretch starts (no end: until the stretch ends). The headline of the compare stretch is
+# not here: it follows the switches found in the footage.
 CAPTIONS = [
     ("a_label", LEFT, LABEL, "team", 0.2, 2.8), ("title", 58, 232, "team", 0.3, 2.8), ("a_line", LEFT, LINE, "team", 0.8, 2.8),
     ("b_label", LEFT, LABEL, "push", 0.2, None), ("b_head", 60, HEAD, "push", 0.3, None), ("b_line", LEFT, LINE, "push", 0.7, None),
@@ -49,11 +46,10 @@ CAPTIONS = [
     ("c1_line", LEFT, LINE, "scan", 0.5, 2.1), ("c2_line", LEFT, LINE, "scan", 2.25, None), ("x2", LEFT, TAG, "scan", 0.1, None),
     ("d_label", LEFT, LABEL, "live", 0.05, None), ("d_head", 60, HEAD, "live", 0.15, None),
     ("d_line", LEFT, LINE, "live", 0.9, None), ("x2", LEFT, TAG, "live", 0.1, None), ("live", 900, LABEL, "live", 0.9, None),
+    ("f_label", LEFT, LABEL, "compare", 0.05, None), ("f_line", LEFT, LINE, "compare", 0.4, None),
+    ("x14", LEFT, TAG, "compare", 0.1, None),
     ("e_label", LEFT, LABEL, "outdoor", 0.05, None), ("e_head", 60, HEAD, "outdoor", 0.15, None),
     ("e_line", LEFT, LINE, "outdoor", 0.6, None), ("e_tag", LEFT, TAG, "outdoor", 0.6, None),
-    ("f_label", LEFT, LABEL, "compare", 0.05, None), ("f_real", 60, HEAD, "compare", 0.2, SPLAT_AT - 0.1),
-    ("f_splat", 60, HEAD, "compare", SPLAT_AT + 0.15, REAL_AT - 0.1), ("f_real", 60, HEAD, "compare", REAL_AT + 0.1, None),
-    ("f_line", LEFT, LINE, "compare", 0.6, None),
     ("title_end", 58, 620, "end", 0.2, None), ("g_1", LEFT, 820, "end", 0.5, None), ("g_2", LEFT, 905, "end", 0.75, None),
     ("g_3", LEFT, 990, "end", 1.0, None), ("g_4", LEFT, 1075, "end", 1.25, None), ("g_foot", LEFT, LINE, "end", 1.5, None),
 ]
@@ -132,31 +128,38 @@ def between(a: np.ndarray, b: np.ndarray, part: float, flow_of: dict, key: int) 
     return cv2.addWeighted(from_a, 1 - part, from_b, part, 0)
 
 
-def compare(path: Path, count: int) -> list:
-    """Two switches out of the recording while the head keeps turning: reality, through
-    black to the reconstruction, and a dissolve back to reality (6:10.4 to 6:15.5).
+def compare(path: Path, start: float, length: float, count: int):
+    """A turn through the room with the view switching as it goes (6:12.8 to 6:21.2 of the
+    recording: coffee machine, fridge, door, cash machine; training finished).
 
-    Only lightly steadied, so the turning stays. Reality plays at the speed it was
-    recorded. The recording stays on the reconstruction for 1.1 s and on the second
-    reality for half a second before the next switch, so those are slowed to about 0.6x
-    and 0.5x, with the frames in between made by optical flow."""
-    frames = steady(list(reader(path, 0.0, 8.0, 1.0)), sigma=12.0, enlarge=1.06)
+    Played 1.4 times as fast, the frames in between made by optical flow, and only lightly
+    steadied, so the turning stays. Returns the frames and, for each, what is on screen:
+    the switch to the reconstruction passes through black, the one back only dims, so the
+    two are told apart by how dark the picture gets."""
+    frames = steady(list(reader(path, 0.0, start + length + 0.6, 1.0)), sigma=10.0, enlarge=1.06)
     light = np.array([f[:700:8, ::8].mean() for f in frames])
-    dark = 120 + int(light[120:190].argmin())             # real -> splat: goes fully black
-    back = dark + 35 + int(light[dark + 35:dark + 65].argmin())  # splat -> real: only dims
-    half_a, half_b = (TO_SPLAT[1] - TO_SPLAT[0]) // 2, (TO_REAL[1] - TO_REAL[0]) // 2
-    at = np.interp(np.arange(count), [0, TO_SPLAT[0], TO_SPLAT[1], TO_REAL[0], TO_REAL[1], count - 1],
-                   [dark - half_a - TO_SPLAT[0], dark - half_a, dark + half_a, back - half_b, back + half_b,
-                    min(len(frames) - 1, back + half_b + 14)])
-    stamp = lambda i: f"{int((368 + i / 30) // 60)}:{(368 + i / 30) % 60:05.2f}"
-    print(f"to the reconstruction at {stamp(dark)} (brightness {light[dark]:.0f}), back to reality at {stamp(back)} "
-          f"(brightness {light[back]:.0f}, around it {light[back - 12]:.0f} and {light[back + 12]:.0f})", flush=True)
+    switches = []  # (frame of the stretch, what comes after it)
+    for i in range(15, len(light) - 15):
+        around = np.median(np.r_[light[i - 15:i - 6], light[i + 7:i + 16]])
+        if light[i] == light[i - 6:i + 7].min() and light[i] < around * 0.72 and around > 25:
+            if not switches or i - switches[-1][0] > 9:
+                switches.append((i, "splat" if light[i] / around < 0.2 else "real"))
+    at = start * FPS + np.arange(count) * (length / (count / FPS))
+    first = switches[0][1] if switches else "splat"
+    state, shown = "real" if first == "splat" else "splat", []
     out, flow_of = [], {}
     for position in at:
+        for frame_of, after in switches:
+            if frame_of <= position:
+                state = after
+        shown.append(state)
         low = min(int(position), len(frames) - 2)
         part = position - low
         out.append(frames[low] if part < 0.02 else between(frames[low], frames[low + 1], part, flow_of, low))
-    return out
+    moments = [(round((f - start * FPS) / (length / (count / FPS)) / FPS, 2), s) for f, s in switches
+               if start * FPS <= f < at[-1]]
+    print("switches, seconds into the stretch:", moments, flush=True)
+    return out, shown
 
 
 def portrait(frame: np.ndarray) -> np.ndarray:
@@ -234,8 +237,10 @@ def main():
                 for sprite, left, cy, seg, t0, t1 in CAPTIONS]
     for name, file, start, length, shown, layout in SEGMENTS:
         count = round(shown * FPS)
+        on_screen = None
         if name == "compare":
-            source = iter(compare(src / file, count))
+            pictures, on_screen = compare(src / file, start, length, count)
+            source = iter(pictures)
         else:
             source = reader(src / file, start, length, length / shown, (W, H) if file in (PUSH, LEARN) else None)
         last = None
@@ -278,6 +283,11 @@ def main():
                 filled = round(560 * step / 15000)
                 bar[:, :filled] = bar[:, :filled] * (1 - appear) + np.array([124, 249, 201]) * appear
                 frame[y:y + 3, LEFT:LEFT + 560] = bar.astype(np.uint8)
+            if on_screen:
+                # The headline says what is on screen and changes with every switch.
+                since = next((j for j in range(1, k + 1) if on_screen[k - j] != on_screen[k]), k) / FPS
+                paste(frame, sprites["f_real" if on_screen[k] == "real" else "f_splat"], 60, HEAD,
+                      min(1.0, (since + 1 / FPS) / 0.1) * min(1.0, (count - k) / 4))
             for sprite, left, cy, t0, t1 in captions:
                 if t0 <= t < t1:
                     age, remaining = t - t0, t1 - t

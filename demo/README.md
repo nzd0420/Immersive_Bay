@@ -1,7 +1,8 @@
 # Demo video
 
-Everything that exists only to make the 30-second demo video of Live Splat. None of it is
-needed to run the project: that is `server/`, `viewer/` and `scripts/` at the top level.
+Everything that exists only to make demo footage of Live Splat: offline renders of
+scanned scenes, and a scripted 30-second vertical cut. None of it is needed to run the
+project: that is `server/`, `viewer/` and `scripts/` at the top level.
 
 The video itself, the clips it is cut from and the intermediate renders are large and are
 not in the repository. The folders they live in locally are listed below so that the
@@ -11,7 +12,7 @@ scripts' paths make sense.
 
 ```text
 demo/
-  storyboard.md      what the video shows, second by second
+  storyboard.md      what the scripted cut shows, second by second
   render/            offline renders of a scanned scene, made on the GPU machine
     walk_path.py       a scan's recorded head path as a smooth camera path
     render_walk.sh     first-person videos along that path: while training, finished, photos
@@ -28,7 +29,7 @@ demo/
   out/               not tracked: finished cuts
 ```
 
-## How the video is made
+## How the footage and the cut are made
 
 **1. Footage from the headset.** The Quest's own screen recorder captures a whole session:
 scanning in passthrough, the upload, the reconstruction forming, and switching between

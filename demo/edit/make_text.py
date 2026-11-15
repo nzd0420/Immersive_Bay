@@ -58,8 +58,8 @@ def label(text, colour=ACCENT, size=34, **extra):
     return sprite([(text, font(MONO, size, "Medium"), colour, 0.16)], **extra)
 
 
-def head(text, size=96, weight="Semibold"):
-    return sprite([(text, font(SANS, size, weight), WHITE, -0.012)])
+def head(text, size=96, weight="Semibold", colour=WHITE):
+    return sprite([(text, font(SANS, size, weight), colour, -0.012)])
 
 
 def line(text, size=46):
@@ -88,8 +88,9 @@ SPRITES = {
     "e_tag": label("TIME-LAPSE OF ONE TRAINING RUN", SOFT, 24),
     "f_label": label("03  COMPARE", bar=True),
     "f_real": head("Reality"),
-    "f_splat": head("Gaussian splat"),
+    "f_splat": head("Gaussian splat", colour=ACCENT),
     "f_line": line("Same place. Real scale. Press B to switch."),
+    "x14": label("1.4× SPEED", SOFT, 24),
     "g_1": label("REAL-TIME 3D GAUSSIAN SPLATTING", WHITE, 36),
     "g_2": label("FULLY WIRELESS", WHITE, 36),
     "g_3": label("NO APP  ·  NO CABLE", WHITE, 36),
