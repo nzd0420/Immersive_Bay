@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+"""Render a slow horizontal orbit around a finished reconstruction.
+
+    python render_orbit.py --frame final_frame.bin --info final_frame.json --out orbit.mp4
+
+The input is one frame exactly as the live server streams it (16 bytes per Gaussian, the
+layout written by `pack_frame` in live_server.py), saved together with the scene's
+description. So the video shows the very model that was on screen: nothing is trained
+again. scripts/render_orbit.sh fetches both from a running server.
+
+The camera circles the scene's centre about the scene's up direction, at a distance and
+an elevation, and keeps the horizon level. The centre is the middle of the box around the
+more opaque Gaussians. Azimuth 0 looks from the side the scan was made from. `--stills N` writes N evenly spaced JPEGs instead of a video, for choosing
+the view.
+
+Needs torch, gsplat, numpy and imageio-ffmpeg.
+"""
+import argparse
+import json
+import math
+from pathlib import Path
+
+import imageio_ffmpeg
+import numpy as np
+import torch
+from gsplat.rendering import rasterization
+
+DEVICE = "cuda"
+
+
+def unpack_frame(path: Path) -> dict:
+    """The inverse of pack_frame: positions, scales, rotations (w, x, y, z), colour, opacity."""
+    rows = np.fromfile(path, np.uint8).reshape(-1, 16)
+    rows = rows[rows[:, 3] > 0]  # opacity 0 marks a Gaussian that is not shown
+    rgba = rows[:, 0:4].astype(np.float32) / 255.0
+    means = rows[:, 4:10].copy().view(np.float16).astype(np.float32)
+    uv = rows[:, 10:12].astype(np.float32) / 255.0 * 2.0 - 1.0
+    scales = np.exp((rows[:, 12:15].astype(np.float32) - 1.0) * (21.0 / 254.0) - 12.0)
+    angle = rows[:, 15].astype(np.float32) / 255.0 * math.pi
+    # the rotation axis, folded into a square (octahedral encoding)
+    z = 1.0 - np.abs(uv[:, 0]) - np.abs(uv[:, 1])
+    t = np.maximum(-z, 0.0)
+    x = uv[:, 0] + np.where(uv[:, 0] >= 0, -t, t)
+    y = uv[:, 1] + np.where(uv[:, 1] >= 0, -t, t)
+    axis = np.stack([x, y, z], axis=1)
+    axis /= np.linalg.norm(axis, axis=1, keepdims=True)
+    quats = np.concatenate([np.cos(angle / 2)[:, None], axis * np.sin(angle / 2)[:, None]], axis=1)
+    to = lambda array: torch.from_numpy(np.ascontiguousarray(array)).float().to(DEVICE)
+    return {"means": to(means), "scales": to(scales), "quats": to(quats),
+            "colors": to(rgba[:, :3]), "opacities": to(rgba[:, 3])}
+
+
+def look_at(position: np.ndarray, target: np.ndarray, up: np.ndarray) -> np.ndarray:
+    """World-to-camera matrix of an OpenCV camera (x right, y down, z forward), horizon level."""
+    forward = target - position
+    forward /= np.linalg.norm(forward)
+    right = np.cross(forward, up)
+    right /= np.linalg.norm(right)
+    down = np.cross(forward, right)
+    camera_to_world = np.eye(4)
+    camera_to_world[:3, :3] = np.stack([right, down, forward], axis=1)
+    camera_to_world[:3, 3] = position
+    return np.linalg.inv(camera_to_world)
+
+
+@torch.no_grad()
+def render(splats: dict, viewmat: np.ndarray, K: np.ndarray, width: int, height: int) -> np.ndarray:
+    image, _, _ = rasterization(
+        means=splats["means"], quats=splats["quats"], scales=splats["scales"],
+        opacities=splats["opacities"], colors=splats["colors"],
+        viewmats=torch.from_numpy(viewmat).float().to(DEVICE)[None],
+        Ks=torch.from_numpy(K).float().to(DEVICE)[None], width=width, height=height,
+    )
+    return (image[0].clamp(0, 1) * 255).round().byte().cpu().numpy()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--frame", required=True, help="the streamed frame, 16 bytes per Gaussian")
+    parser.add_argument("--info", required=True, help="JSON with the scene description")
+    parser.add_argument("--out", required=True, help="the .mp4, or a folder with --stills")
+    parser.add_argument("--distance", type=float, default=16.0, help="metres from the centre")
+    parser.add_argument("--elevation", type=float, default=10.0, help="degrees above the horizon")
+    parser.add_argument("--azimuth", type=float, default=0.0, help="degrees, where the orbit starts")
+    parser.add_argument("--target", type=float, nargs=3, default=[0.0, 0.0, 0.0],
+                        metavar=("FORWARD", "SIDE", "UP"), help="move the centre, in metres")
+    parser.add_argument("--fov", type=float, default=55.0, help="vertical field of view, degrees")
+    parser.add_argument("--width", type=int, default=1920)
+    parser.add_argument("--height", type=int, default=1080)
+    parser.add_argument("--seconds", type=float, default=30.0, help="for one full turn")
+    parser.add_argument("--turns", type=float, default=1.0)
+    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--clockwise", action="store_true")
+    parser.add_argument("--stills", type=int, default=0, help="write this many JPEGs instead")
+    args = parser.parse_args()
+
+    scene = json.loads(Path(args.info).read_text())["scene"]
+    splats = unpack_frame(Path(args.frame))
+    to_world = np.array(scene["to_world"]) if scene.get("to_world") else np.eye(4)
+    metre = 1.0 / np.cbrt(abs(np.linalg.det(to_world[:3, :3])))  # scene units per metre
+    up = np.array(scene["up"], dtype=np.float64)
+    up /= np.linalg.norm(up)
+    # The middle of what is actually visible: the centre of the box that holds the middle
+    # 90% of the more opaque Gaussians along each axis. (Their median sits low, near the
+    # floor, and the scene would circle around the edge of the picture.)
+    solid = splats["means"][splats["opacities"] > 0.3].double().cpu().numpy()
+    low, high = np.percentile(solid, 5, axis=0), np.percentile(solid, 95, axis=0)
+    centre = (low + high) / 2
+    # Horizontal axes: `front` points from the centre towards where the scan was made.
+    front = np.array(scene["view"], dtype=np.float64) - centre
+    front -= front.dot(up) * up
+    front /= np.linalg.norm(front)
+    side = np.cross(up, front)
+    target = centre + metre * (args.target[0] * front + args.target[1] * side + args.target[2] * up)
+
+    fy = args.height / 2 / math.tan(math.radians(args.fov) / 2)
+    K = np.array([[fy, 0, args.width / 2], [0, fy, args.height / 2], [0, 0, 1]])
+    elevation = math.radians(args.elevation)
+
+    def frame_at(azimuth_degrees: float) -> np.ndarray:
+        azimuth = math.radians(azimuth_degrees)
+        direction = math.cos(elevation) * (math.cos(azimuth) * front + math.sin(azimuth) * side) \
+            + math.sin(elevation) * up
+        position = target + metre * args.distance * direction
+        return render(splats, look_at(position, target, up), K, args.width, args.height)
+
+    print(f"{len(splats['means'])} Gaussians, 1 m = {metre:.3f} scene units", flush=True)
+    sign = -1.0 if args.clockwise else 1.0
+    if args.stills:
+        import cv2
+
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        for i in range(args.stills):
+            azimuth = args.azimuth + sign * 360.0 * i / args.stills
+            image = frame_at(azimuth)
+            cv2.imwrite(str(out / f"az{int(round(azimuth)) % 360:03d}.jpg"), image[:, :, ::-1],
+                        [cv2.IMWRITE_JPEG_QUALITY, 88])
+        print(f"{args.stills} stills in {out}", flush=True)
+        return
+
+    count = int(round(args.seconds * args.turns * args.fps))
+    stream = imageio_ffmpeg.write_frames(
+        args.out, (args.width, args.height), fps=args.fps, codec="libx264", pix_fmt_in="rgb24",
+        pix_fmt_out="yuv420p", quality=None, output_params=["-crf", "16", "-preset", "medium"],
+        macro_block_size=2,
+    )
+    stream.send(None)
+    for i in range(count):
+        azimuth = args.azimuth + sign * 360.0 * args.turns * i / count
+        stream.send(frame_at(azimuth).tobytes())
+        if (i + 1) % 150 == 0:
+            print(f"frame {i + 1}/{count}", flush=True)
+    stream.close()
+    print(f"done: {count} frames, {count / args.fps:.1f} s, {args.out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
