@@ -241,6 +241,7 @@ async function showFrame(payload, meta) {
   // leave the choice alone, so B/Y can keep the real room in view while it trains.
   if (!state.hasScene) showReconstruction(true);
   state.hasScene = true;
+  if (meta.reset) fly.time = 0; // a run or a replay starts over: so does the walk
   markers.visible = false;
   depthCloud.visible = false;
   packed.numSplats = count;
@@ -917,6 +918,82 @@ autoOpenCameras();
 document.addEventListener("visibilitychange", autoOpenCameras);
 window.addEventListener("focus", autoOpenCameras);
 
+// ---------------------------------------------------------------- first-person replay
+
+// On a desktop, retrace the scan: the camera follows the head path that was recorded
+// while scanning, as the reconstruction trains or replays. Recording the window then
+// gives the view from inside the headset, without the headset.
+const FLY_FOV = Number(new URLSearchParams(location.search).get("fov")) || 80;
+const fly = { on: false, scene: "", rows: null, time: 0, speed: 1, paused: false };
+const flyFrom = new THREE.Quaternion(), flyTo = new THREE.Quaternion();
+
+async function loadPath(name) {
+  fly.scene = name;
+  fly.rows = null;
+  try {
+    const rows = await (await fetch(`/scan/poses?id=${name}`)).json();
+    if (fly.scene === name && rows.length > 2) {
+      fly.rows = rows;
+      fly.time = 0;
+    }
+  } catch (error) {
+    // no path for this scene
+  }
+  render();
+}
+
+// Moves the camera along the path; false when there is no path to follow.
+function flyCamera(seconds) {
+  if (!fly.on || renderer.xr.isPresenting || !sceneInfo?.anchored) return false;
+  if (fly.scene !== sceneInfo.name) loadPath(sceneInfo.name);
+  const rows = fly.rows;
+  if (!rows) return false;
+  const start = rows[0][0], length = rows[rows.length - 1][0] - start;
+  if (!fly.paused) fly.time = (fly.time + seconds * 1000 * fly.speed) % length;
+  const t = start + fly.time;
+  let low = 0, high = rows.length - 1;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (rows[middle][0] <= t) low = middle;
+    else high = middle;
+  }
+  const a = rows[low], b = rows[high];
+  // Tracking paused here during the scan: jump over the gap instead of gliding through it.
+  const k = b[0] - a[0] > 500 ? 1 : (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
+  camera.position.set(a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k);
+  camera.quaternion.copy(flyFrom.set(a[4], a[5], a[6], a[7])).slerp(flyTo.set(b[4], b[5], b[6], b[7]), k);
+  return true;
+}
+
+function setFly(on) {
+  fly.on = on;
+  $("fly").checked = on;
+  camera.fov = on ? FLY_FOV : 55;
+  camera.updateProjectionMatrix();
+  document.body.style.background = on ? "#000" : "";
+  if (!on) placeStage(); // back to the orbit view
+  render();
+}
+$("fly").addEventListener("change", () => setFly($("fly").checked));
+$("flySpeed").addEventListener("input", () => {
+  fly.speed = Number($("flySpeed").value);
+  $("flySpeedLabel").textContent = `${fly.speed}×`;
+});
+window.addEventListener("keydown", (event) => {
+  if (/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) return;
+  if (event.key === "h" || event.key === "H") {
+    // hide the controls, for a clean recording
+    const hidden = $("panel").style.display !== "none";
+    $("panel").style.display = hidden ? "none" : "";
+    $("xr").style.visibility = hidden ? "hidden" : "";
+  } else if (event.key === " ") {
+    fly.paused = !fly.paused;
+    event.preventDefault();
+  } else if (event.key === "r" || event.key === "R") {
+    fly.time = 0;
+  }
+});
+
 // ---------------------------------------------------------------- readouts
 
 const LABELS = { idle: "Idle. Pick a scene and start.", loading: "Loading images…",
@@ -984,6 +1061,10 @@ function render() {
     : "");
   $("play").textContent = r.replay ? "Back to live" : "Replay";
   $("copying").textContent = r.copying ? `Copying the latest recording: ${r.copying}` : "";
+  $("flyNote").textContent = !fly.on ? ""
+    : !sceneInfo?.anchored ? "pick a scene scanned in the headset (scan-…)"
+    : fly.rows ? "H: hide controls · Space: pause the walk · R: back to the start"
+    : "no head path found for this scene";
   $("count").textContent = r.count ? r.count.toLocaleString() : "–";
   $("psnr").textContent = r.psnr ? `${r.psnr.toFixed(1)} dB` : "–";
   $("speed").textContent = r.speed ? `${r.speed.toFixed(0)} steps/s` : "–";
@@ -1192,6 +1273,7 @@ function pollButtons() {
 const VERTICAL = new THREE.Vector3(0, 1, 0);
 
 let lastFrameAt = performance.now();
+let flyFrameAt = performance.now();
 
 renderer.setAnimationLoop((time, frame) => {
   const frameAt = performance.now();
@@ -1212,7 +1294,10 @@ renderer.setAnimationLoop((time, frame) => {
     stage.position.copy(drag.position).sub(drag.middle).applyAxisAngle(VERTICAL, turn)
       .add(now.middle);
   }
-  if (!renderer.xr.isPresenting) controls.update();
+  const flying = flyCamera(Math.min(0.1, (frameAt - flyFrameAt) / 1000));
+  flyFrameAt = frameAt;
+  controls.enabled = !flying && !renderer.xr.isPresenting;
+  if (!renderer.xr.isPresenting && !flying) controls.update();
   renderer.render(scene, camera);
 });
 

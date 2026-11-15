@@ -26,6 +26,11 @@
     #scanRow button { flex: 1; }
     button:disabled { opacity: .45; cursor: default; }
     #scanNote { color: var(--dim); font-size: 12px; min-height: 1em; }
+    #flyRow { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    #flySpeedRow { align-items: center; margin: 6px 0 0; }
+    #flySpeedRow input { flex: 1; width: auto; padding: 0; }
+    #flySpeedLabel { color: var(--dim); font-size: 12px; width: 36px; text-align: right; }
+    #flyNote { color: var(--dim); font-size: 12px; min-height: 1em; }
     #replayRow { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
     #copying { color: var(--accent); font-size: 12px; margin-top: 6px; min-height: 1em; }
     #bar { height: 6px; background: #1b1f29; border-radius: 3px; overflow: hidden; margin: 12px 0 10px; }
@@ -81,6 +86,12 @@
     </div>
     <label class="check"><input id="auto" type="checkbox"> Record each run and replay it when it finishes</label>
     <div id="copying"></div>
+    <label class="check" id="flyRow"><input id="fly" type="checkbox"> First person: follow the path walked during the scan (desktop)</label>
+    <div class="row" id="flySpeedRow">
+      <input id="flySpeed" type="range" min="0.25" max="4" step="0.25" value="1" aria-label="Walking speed">
+      <span id="flySpeedLabel">1×</span>
+    </div>
+    <div id="flyNote"></div>
     <div id="hint">Drag to orbit · scroll to zoom</div>
   </div>
   <button id="xr" class="hidden">Enter AR</button>

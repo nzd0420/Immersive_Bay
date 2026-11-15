@@ -178,6 +178,15 @@ def make_handler(upstream_host, upstream_port, fetcher, scans):
                 self.close_connection = True
 
         def do_GET(self):
+            if self.path.startswith("/scan/poses"):
+                # The head path of a recorded scan, thinned to about 30 samples a second,
+                # so a desktop viewer can retrace it.
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    rows = json.loads((scans._dir(query["id"][0]) / "poses.json").read_text())
+                except (KeyError, ValueError, OSError):
+                    return self._reply(404, b"[]", "application/json")
+                return self._reply(200, json.dumps(rows[::3]).encode(), "application/json")
             if self.path.startswith("/scan/status"):
                 return self._reply(200, json.dumps(scans.status).encode(), "application/json")
             if self.path.startswith("/api/recordings"):
