@@ -6,12 +6,14 @@
 The input is one frame exactly as the live server streams it (16 bytes per Gaussian, the
 layout written by `pack_frame` in live_server.py), saved together with the scene's
 description. So the video shows the very model that was on screen: nothing is trained
-again. scripts/render_orbit.sh fetches both from a running server.
+again. scripts/render_orbit.sh fetches both from the running server and runs this.
 
 The camera circles the scene's centre about the scene's up direction, at a distance and
 an elevation, and keeps the horizon level. The centre is the middle of the box around the
-more opaque Gaussians. Azimuth 0 looks from the side the scan was made from. `--stills N` writes N evenly spaced JPEGs instead of a video, for choosing
-the view.
+more opaque Gaussians. Azimuth 0 looks from the side the scan was made from. With
+`--push-in SECONDS` the orbit ends by slowing down and moving inside the scene, to where
+the scan was made from, and stays there looking at what was scanned. `--stills N` writes
+N evenly spaced JPEGs instead of a video, for choosing the view.
 
 Needs torch, gsplat, numpy and imageio-ffmpeg.
 """
@@ -91,7 +93,13 @@ def main():
     parser.add_argument("--turns", type=float, default=1.0)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--clockwise", action="store_true")
+    parser.add_argument("--push-in", type=float, default=0.0, metavar="SECONDS",
+                        help="end by slowing the orbit and moving inside the scene, over this long")
+    parser.add_argument("--hold", type=float, default=5.0, metavar="SECONDS",
+                        help="after a push-in, how long to stay inside (drifting slowly forward)")
     parser.add_argument("--stills", type=int, default=0, help="write this many JPEGs instead")
+    parser.add_argument("--stills-from", type=float, default=0.0, metavar="SECONDS",
+                        help="with --stills: take them from this time on")
     args = parser.parse_args()
 
     scene = json.loads(Path(args.info).read_text())["scene"]
@@ -115,44 +123,87 @@ def main():
 
     fy = args.height / 2 / math.tan(math.radians(args.fov) / 2)
     K = np.array([[fy, 0, args.width / 2], [0, fy, args.height / 2], [0, 0, 1]])
-    elevation = math.radians(args.elevation)
 
-    def frame_at(azimuth_degrees: float) -> np.ndarray:
+    def around(azimuth_degrees: float, out: float, height: float) -> np.ndarray:
+        """A point `out` metres from the vertical axis through the target, `height` above it."""
         azimuth = math.radians(azimuth_degrees)
-        direction = math.cos(elevation) * (math.cos(azimuth) * front + math.sin(azimuth) * side) \
-            + math.sin(elevation) * up
-        position = target + metre * args.distance * direction
-        return render(splats, look_at(position, target, up), K, args.width, args.height)
+        return target + metre * (out * (math.cos(azimuth) * front + math.sin(azimuth) * side) + height * up)
 
-    print(f"{len(splats['means'])} Gaussians, 1 m = {metre:.3f} scene units", flush=True)
+    # The camera path: one (position, point looked at) for every frame.
     sign = -1.0 if args.clockwise else 1.0
+    speed = 360.0 / args.seconds  # degrees per second
+    out = args.distance * math.cos(math.radians(args.elevation))
+    height = args.distance * math.sin(math.radians(args.elevation))
+    path = []
+    if args.push_in <= 0:
+        count = int(round(args.seconds * args.turns * args.fps))
+        for i in range(count):
+            path.append((around(args.azimuth + sign * speed * i / args.fps, out, height), target))
+    else:
+        # The orbit runs at its steady speed, then slows to a stop over the push-in while
+        # the camera moves to where the scan was made from and turns to look at what was
+        # scanned. The steady part is as long as it takes for the orbit to stop exactly on
+        # the side it enters from, after about one turn.
+        inside = np.array(scene["view"], dtype=np.float64)
+        looked_at = np.array(scene["center"], dtype=np.float64)
+        offset = (inside - target) / metre
+        inside_height = float(offset.dot(up))
+        level = offset - inside_height * up
+        inside_out = float(np.linalg.norm(level))
+        inside_azimuth = math.degrees(math.atan2(level.dot(side), level.dot(front)))
+        turned = (sign * (inside_azimuth - args.azimuth)) % 360.0
+        while turned < 300.0 * args.turns:
+            turned += 360.0
+        slowing = speed * args.push_in / 2  # degrees covered while stopping
+        steady = int(round((turned - slowing) / speed * args.fps))
+        for i in range(steady):
+            path.append((around(args.azimuth + sign * speed * i / args.fps, out, height), target))
+        azimuth = args.azimuth + sign * speed * steady / args.fps
+        pushing = int(round(args.push_in * args.fps))
+        for i in range(pushing):
+            u = (i + 1) / pushing
+            ease = u * u * u * (u * (6 * u - 15) + 10)  # smooth start and stop
+            angle = azimuth + sign * speed * args.push_in * (u - u * u / 2)
+            position = around(angle, out + (inside_out - out) * ease, height + (inside_height - height) * ease)
+            path.append((position, target + (looked_at - target) * ease))
+        forward = (looked_at - inside) / np.linalg.norm(looked_at - inside)
+        holding = int(round(args.hold * args.fps))
+        for i in range(holding):
+            u = (i + 1) / holding
+            path.append((inside + forward * metre * 0.15 * u * u, looked_at))
+        print(f"orbit {steady / args.fps:.1f} s, push-in {args.push_in:.1f} s to "
+              f"{inside_out:.1f} m out and {inside_height:.1f} m up, hold {args.hold:.1f} s", flush=True)
+
+    def frame(index: int) -> np.ndarray:
+        position, looked_at_point = path[index]
+        return render(splats, look_at(position, looked_at_point, up), K, args.width, args.height)
+
+    print(f"{len(splats['means'])} Gaussians, 1 m = {metre:.3f} scene units, "
+          f"{len(path)} frames ({len(path) / args.fps:.1f} s)", flush=True)
     if args.stills:
         import cv2
 
-        out = Path(args.out)
-        out.mkdir(parents=True, exist_ok=True)
-        for i in range(args.stills):
-            azimuth = args.azimuth + sign * 360.0 * i / args.stills
-            image = frame_at(azimuth)
-            cv2.imwrite(str(out / f"az{int(round(azimuth)) % 360:03d}.jpg"), image[:, :, ::-1],
+        folder = Path(args.out)
+        folder.mkdir(parents=True, exist_ok=True)
+        first = min(len(path) - 1, int(round(args.stills_from * args.fps)))
+        for index in np.linspace(first, len(path) - 1, args.stills).round().astype(int):
+            cv2.imwrite(str(folder / f"t{index / args.fps:05.1f}.jpg"), frame(index)[:, :, ::-1],
                         [cv2.IMWRITE_JPEG_QUALITY, 88])
-        print(f"{args.stills} stills in {out}", flush=True)
+        print(f"{args.stills} stills in {folder}", flush=True)
         return
 
-    count = int(round(args.seconds * args.turns * args.fps))
     stream = imageio_ffmpeg.write_frames(
         args.out, (args.width, args.height), fps=args.fps, codec="libx264", pix_fmt_in="rgb24",
         pix_fmt_out="yuv420p", quality=None, output_params=["-crf", "16", "-preset", "medium"],
         macro_block_size=2,
     )
     stream.send(None)
-    for i in range(count):
-        azimuth = args.azimuth + sign * 360.0 * args.turns * i / count
-        stream.send(frame_at(azimuth).tobytes())
-        if (i + 1) % 150 == 0:
-            print(f"frame {i + 1}/{count}", flush=True)
+    for index in range(len(path)):
+        stream.send(frame(index).tobytes())
+        if (index + 1) % 150 == 0:
+            print(f"frame {index + 1}/{len(path)}", flush=True)
     stream.close()
-    print(f"done: {count} frames, {count / args.fps:.1f} s, {args.out}", flush=True)
+    print(f"done: {len(path)} frames, {len(path) / args.fps:.1f} s, {args.out}", flush=True)
 
 
 if __name__ == "__main__":
