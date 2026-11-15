@@ -13,7 +13,8 @@ an elevation, and keeps the horizon level. The centre is the middle of the box a
 more opaque Gaussians. Azimuth 0 looks from the side the scan was made from. With
 `--push-in SECONDS` the orbit ends by slowing down and moving inside the scene, to where
 the scan was made from, and stays there looking at what was scanned. `--stills N` writes
-N evenly spaced JPEGs instead of a video, for choosing the view.
+N evenly spaced JPEGs instead of a video, for choosing the view. For a vertical video give
+`--width 2160 --height 3840` and a taller `--fov`; `--last 15` renders only the last 15 s.
 
 Needs torch, gsplat, numpy and imageio-ffmpeg.
 """
@@ -97,6 +98,8 @@ def main():
                         help="end by slowing the orbit and moving inside the scene, over this long")
     parser.add_argument("--hold", type=float, default=5.0, metavar="SECONDS",
                         help="after a push-in, how long to stay inside (drifting slowly forward)")
+    parser.add_argument("--last", type=float, default=0.0, metavar="SECONDS",
+                        help="render only this much of the end of the video")
     parser.add_argument("--stills", type=int, default=0, help="write this many JPEGs instead")
     parser.add_argument("--stills-from", type=float, default=0.0, metavar="SECONDS",
                         help="with --stills: take them from this time on")
@@ -173,6 +176,9 @@ def main():
             path.append((inside + forward * metre * 0.15 * u * u, looked_at))
         print(f"orbit {steady / args.fps:.1f} s, push-in {args.push_in:.1f} s to "
               f"{inside_out:.1f} m out and {inside_height:.1f} m up, hold {args.hold:.1f} s", flush=True)
+
+    if args.last:
+        path = path[-int(round(args.last * args.fps)):]
 
     def frame(index: int) -> np.ndarray:
         position, looked_at_point = path[index]

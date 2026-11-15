@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 name="$1"; shift
-host="${HOST:-autodl_3080TI}"
+host="${HOST:-autodl_pro6000}"
 remote=/root/autodl-tmp/immersive_bay
 gsplat_project=/root/autodl-tmp/Gaussian_Story
 
@@ -59,7 +59,11 @@ rsync -az server/render_orbit.py "$host:$remote/server/render_orbit.py"
 rsync -az "renders/$scene/final_frame.bin" "renders/$scene/final_frame.json" "$host:$remote/renders/$scene/"
 ssh -o BatchMode=yes "$host" "bash -s" <<REMOTE
 set -euo pipefail
-source $gsplat_project/env/nzd/autodl/activate.sh >/dev/null 2>&1
+if [ -f $remote/activate.sh ]; then
+  source $remote/activate.sh >/dev/null 2>&1
+else
+  source $gsplat_project/env/nzd/autodl/activate.sh >/dev/null 2>&1
+fi
 cd $remote
 python server/render_orbit.py --frame renders/$scene/final_frame.bin --info renders/$scene/final_frame.json \
   --out renders/$scene/orbit/$name.mp4 $* 2>&1 | grep -v -i "warn" | tail -3

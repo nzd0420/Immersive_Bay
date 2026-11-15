@@ -8,7 +8,16 @@ frames a second. Stretches in which nothing was photographed for more than 1.5 s
 tracker was paused, or the walker stood still) are shortened to 1.5 s, crossing them in
 a straight line. For every video frame the output gives the camera pose in the COLMAP
 world of the scan's workspace and the photo that was the most recent one at that moment.
+
+One camera move out of the walk, steadied, ending with a metre forward:
+
+    python3 scripts/walk_path.py scan-164255 --frames 755:1005 --steady 12 --forward 0.9
+
+--steady is how many frames (at 30 a second) the head's bobbing and jitter is averaged
+over; --forward adds two seconds at the end that glide straight ahead, level, looking
+the way the last frame looks; --speed 1.6 then plays the whole move 1.6 times as fast.
 """
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -85,5 +94,63 @@ def build(scan_id: str, fps: int = 30, latency_ms: float = 15.0, gap_ms: float =
             "frames": frames}
 
 
+def cut(walk: dict, first: int, last: int, steady: float = 0.0, forward: float = 0.0,
+        forward_seconds: float = 2.0, speed: float = 1.0) -> dict:
+    """Frames first..last of a walk, optionally steadied and continued straight ahead."""
+    frames = walk["frames"]
+    lead = min(first, round(3 * steady))  # real frames before the cut, so its start is smoothed too
+    part = frames[first - lead:last + 1]
+    centres = np.array([frame["C"] for frame in part])
+    quats = np.array([matrix_to_quat(np.array(frame["R"]).reshape(3, 3)) for frame in part])
+    photo = [frame["photo"] for frame in part]
+    if forward:
+        # Level (the workspace's y axis is gravity), in the direction the last frame looks.
+        ahead = quat_to_matrix(quats[-1])[:, 2] * np.array([1.0, 0.0, 1.0])
+        ahead /= np.linalg.norm(ahead)
+        count = round(forward_seconds * walk["fps"])
+        t = np.arange(1, count + 1) / count
+        glide = t * t * (3 - 2 * t)  # starts and ends at rest
+        centres = np.concatenate([centres, centres[-1] + np.outer(glide * forward, ahead)])
+        quats = np.concatenate([quats, np.repeat(quats[-1:], count, 0)])
+        photo += [photo[-1]] * count
+    for i in range(1, len(quats)):
+        if np.dot(quats[i], quats[i - 1]) < 0:
+            quats[i] = -quats[i]
+    if steady:
+        reach = round(3 * steady)
+        kernel = np.exp(-0.5 * (np.arange(-reach, reach + 1) / steady) ** 2)
+        kernel /= kernel.sum()
+
+        def smooth(values):
+            padded = np.pad(values, ((reach, reach), (0, 0)), mode="edge")
+            return np.stack([np.convolve(padded[:, i], kernel, "valid") for i in range(values.shape[1])], 1)
+        centres, quats = smooth(centres), smooth(quats)
+    centres, quats, photo = centres[lead:], quats[lead:], photo[lead:]
+    if speed != 1.0:
+        # Poses at evenly spaced moments of the faster move, between the frames around them.
+        at = np.linspace(0, len(centres) - 1, round((len(centres) - 1) / speed) + 1)
+        low = np.minimum(at.astype(int), len(centres) - 2)
+        part = (at - low)[:, None]
+        centres = (1 - part) * centres[low] + part * centres[low + 1]
+        quats = (1 - part) * quats[low] + part * quats[low + 1]
+        photo = [photo[i] for i in np.round(at).astype(int)]
+    out = [{"R": np.round(quat_to_matrix(q / np.linalg.norm(q)), 6).flatten().tolist(),
+            "C": np.round(c, 5).tolist(), "photo": n}
+           for c, q, n in zip(centres, quats, photo)]
+    return {**walk, "frames": out}
+
+
 if __name__ == "__main__":
-    json.dump(build(sys.argv[1]), sys.stdout)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("scan")
+    parser.add_argument("--frames", help="FIRST:LAST, only these frames of the walk (both included)")
+    parser.add_argument("--steady", type=float, default=0.0, help="frames to average the motion over")
+    parser.add_argument("--forward", type=float, default=0.0, help="metres to glide ahead at the end")
+    parser.add_argument("--forward-seconds", type=float, default=2.0)
+    parser.add_argument("--speed", type=float, default=1.0, help="play the move this many times as fast")
+    args = parser.parse_args()
+    walk = build(args.scan)
+    if args.frames or args.steady or args.forward or args.speed != 1.0:
+        first, last = (int(v) for v in args.frames.split(":")) if args.frames else (0, len(walk["frames"]) - 1)
+        walk = cut(walk, first, last, args.steady, args.forward, args.forward_seconds, args.speed)
+    json.dump(walk, sys.stdout)

@@ -282,7 +282,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8090)))
     parser.add_argument("--upstream", default="127.0.0.1:8765")
-    parser.add_argument("--ssh-host", default="autodl_3080TI",
+    parser.add_argument("--ssh-host", default=os.environ.get("HOST", "autodl_pro6000"),
                         help="GPU machine, for uploading scans made in the viewer")
     parser.add_argument("--remote-dir", default="/root/autodl-tmp/immersive_bay")
     args = parser.parse_args()
