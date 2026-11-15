@@ -1,4 +1,4 @@
-# Live Splat
+# Darkroom
 
 English | [简体中文](README.zh-CN.md)
 
@@ -21,7 +21,7 @@ XR's hackathon, in 36 hours.
 
 3D Gaussian Splatting is usually a black box: you upload photos, wait, and get a scene.
 The optimisation itself is the interesting part. Tens of thousands of blurry blobs drift,
-split and sharpen until they agree with every photo at once. Live Splat puts that process
+split and sharpen until they agree with every photo at once. Darkroom puts that process
 at room scale, around the person who scanned it, while it happens.
 
 ## How it works

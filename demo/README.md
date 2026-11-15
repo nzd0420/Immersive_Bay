@@ -1,6 +1,6 @@
 # Demo video
 
-Everything that exists only to make demo footage of Live Splat: offline renders of
+Everything that exists only to make demo footage of Darkroom: offline renders of
 scanned scenes, and a scripted 30-second vertical cut. None of it is needed to run the
 project: that is `server/`, `viewer/` and `scripts/` at the top level.
 
@@ -69,7 +69,7 @@ adds the captions and writes the H.264 video.
 ```bash
 python3 demo/edit/make_text.py                       # writes text/*.png
 python demo/edit/make_music.py music.wav
-python demo/edit/make_demo.py --src src --text text --out live-splat-demo.mp4
+python demo/edit/make_demo.py --src src --text text --out darkroom-demo.mp4
 ```
 
 `make_demo.py` and the renderers need `imageio-ffmpeg` and OpenCV; they were run on the

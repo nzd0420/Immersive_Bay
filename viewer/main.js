@@ -1,4 +1,4 @@
-// Live Splat viewer: follows a 3DGS training run, redrawing the Gaussians as frames arrive.
+// Darkroom viewer: follows a 3DGS training run, redrawing the Gaussians as frames arrive.
 // Works on a desktop browser (orbit controls) and in WebXR on a headset (passthrough AR).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
